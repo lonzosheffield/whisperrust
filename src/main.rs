@@ -21,12 +21,15 @@
 //! then main drains a channel. Never a pointer: any process can post `WM_APP` to our
 //! thread, and we would be dereferencing attacker-controlled data (REDTEAM S-03).
 
+mod audio;
+mod audiocheck;
 mod clipboard;
 mod fsm;
 mod hook;
 mod inject;
 mod policy;
 mod preflight;
+mod resample;
 mod sanitize;
 mod target;
 
@@ -423,6 +426,46 @@ fn main() {
     refuse_if_disabled();
 
     let args: Vec<String> = std::env::args().collect();
+
+    // Phase 2 verification: soak the audio path and print CP-2 numbers.
+    if args.iter().any(|a| a == "--audio-check") {
+        let secs: u64 = args
+            .iter()
+            .position(|a| a == "--audio-check")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        let out = format!("evidence/phase-2");
+        std::process::exit(audiocheck::run(secs, &out));
+    }
+
+    // List input devices, so a mic-selection problem is diagnosable.
+    if args.iter().any(|a| a == "--devices") {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let host = cpal::default_host();
+        let default = host
+            .default_input_device()
+            .and_then(|d| d.description().ok().map(|x| x.name().to_string()));
+        println!("default input: {}", default.unwrap_or_else(|| "<none>".into()));
+        if let Ok(devs) = host.input_devices() {
+            for d in devs {
+                let name = d.description().ok().map(|x| x.name().to_string()).unwrap_or_default();
+                let rates: Vec<String> = d
+                    .supported_input_configs()
+                    .map(|cs| {
+                        cs.take(4)
+                            .map(|c| format!("{}-{}Hz x{}", c.min_sample_rate(), c.max_sample_rate(), c.channels()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                println!("  {name}");
+                for r in rates {
+                    println!("      {r}");
+                }
+            }
+        }
+        return;
+    }
 
     // One-shot diagnostic: where would text go right now, and how?
     if args.iter().any(|a| a == "--probe") {
