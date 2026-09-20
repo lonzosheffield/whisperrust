@@ -1,0 +1,25 @@
+{
+  "phase": "3",
+  "checkpoint": "CP-3",
+  "timestamp_utc": "2026-09-20T14:23:39Z",
+  "git_sha": "008cc96",
+  "status": "FAIL",
+  "verdict_by": "independent Fable QA, fresh context",
+  "why_fail": [
+    "No evidence bundle, no session log (seam S-1 is unimplemented).",
+    "The 50-dictation criterion has not been performed - it is the user's to do.",
+    "Five defects would surface inside those 50 dictations: D-1 join glue, D-2 deaf-during-inference, D-3 long dictations downgraded, D-4 hook-thread sleep, D-10 text lost on fallback paths."
+  ],
+  "blocking_defects": {
+    "D-1": "apply_join adds a space, sanitize trims it - every consecutive dictation is glued and lowercased. Verified in code: main.rs:406 then main.rs:429.",
+    "D-4": "deliver() runs on the hook-owning thread and sleeps 750-1500ms in clipboard restore. Verified: main.rs:608 -> clipboard.rs:210.",
+    "D-2": "inference runs synchronously in run_actions, stopping the audio drain and heartbeat for 1.75-4.4s.",
+    "D-7": "validate_pcm pads to 1.0s before audio_secs is computed, so the <0.3s filter layer is dead code."
+  },
+  "confirmed_sound": [
+    "validate_pcm closes the ggml-abort door - no path found to get NaN/Inf/empty to full()",
+    "105 tests pass, 0 ignored, no todo!/dbg!/unimplemented!",
+    "MockBackend shares the same validation gate as the real backend"
+  ],
+  "see": "docs/QA-CP1a-CP3.md"
+}

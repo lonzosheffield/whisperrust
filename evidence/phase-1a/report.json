@@ -1,0 +1,23 @@
+{
+  "phase": "1a",
+  "checkpoint": "CP-1a",
+  "timestamp_utc": "2026-09-20T14:23:37Z",
+  "git_sha": "008cc96",
+  "status": "FAIL",
+  "verdict_by": "independent Fable QA, fresh context",
+  "why_fail": [
+    "No evidence bundle existed at the time the phase was declared built - this file is being created retroactively, which is itself the G-1 violation.",
+    "The eight-app 20/20 matrix was never performed or recorded.",
+    "Three pass criteria are contradicted by the code: B-03 field-change inside one Electron/Chrome hwnd, Explorer file clipboard for >300-char dictations, and hook survival of a 1500ms main-thread stall (D-4 causes that stall deliberately).",
+    "The Phase 0 caveat 'a --manual physical-key run is still owed before Phase 1a closes' was never discharged with an artifact."
+  ],
+  "confirmed_sound": [
+    "I-3 Clearance gate is compiler-enforced - QA proved two illegal constructions are rejected",
+    "I-4 strips every C0/C1 control character",
+    "I-5 runtime allowlist in emit() refuses Enter/Delete/F4/A",
+    "I-6 non-UserKeyUp captures never type",
+    "I-13 hook never swallows",
+    "clipboard-history exclusion verified present after a write"
+  ],
+  "see": "docs/QA-CP1a-CP3.md"
+}
