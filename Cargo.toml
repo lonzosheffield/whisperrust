@@ -15,6 +15,7 @@ hound = "3.5"
 rtrb = "0.4"
 rubato = "5.0"
 serde = { version = "1", features = ["derive"] }
+whisper-rs = "0.16"
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -22,12 +22,14 @@
 //! thread, and we would be dereferencing attacker-controlled data (REDTEAM S-03).
 
 mod audio;
+mod backend;
 mod audiocheck;
 mod clipboard;
 mod fsm;
 mod hook;
 mod inject;
 mod policy;
+mod postprocess;
 mod preflight;
 mod resample;
 mod sanitize;
@@ -133,8 +135,24 @@ struct WorkerCtx {
     rx: Receiver<PttEvent>,
     jobs: Sender<DeliverJob>,
     main_thread: u32,
+    /// Phase 1a fallback: used only when no model is loaded, so the I/O path stays
+    /// testable without a 141 MB download.
     canned: String,
     fake_latency: Duration,
+}
+
+/// Everything the worker needs to turn audio into text. Absent in canned-text mode.
+struct Pipeline {
+    backend: Box<dyn backend::TranscriptionBackend>,
+    capture: audio::AudioCapture,
+    device_rate: u32,
+    preroll: audio::PrerollRing,
+    /// Audio retained for the utterance in flight, at device rate.
+    utterance: Vec<f32>,
+    scratch: Vec<f32>,
+    capturing: bool,
+    /// Previous injected text, for sentence joining.
+    prev: Option<(String, Instant)>,
 }
 
 /// Wake the main thread. Doorbell only - no payload.
@@ -144,11 +162,31 @@ fn ring_doorbell(main_thread: u32) {
     }
 }
 
-fn worker_main(ctx: WorkerCtx) {
+fn worker_main(ctx: WorkerCtx, mut pipe: Option<Pipeline>) {
     let mut machine = Fsm::new();
     let mut watchdog = StuckKeyWatchdog::new();
 
     loop {
+        // Drain the microphone every tick, whether or not we are capturing.
+        //
+        // The stream is ALWAYS running (PLAN 3.3): draining continuously keeps the
+        // preroll ring current so that when PTT-down arrives we already hold the 400 ms
+        // that preceded it. Stopping the drain while idle would let the ring overflow and
+        // would make the preroll stale - which is the whole feature.
+        if let Some(p) = pipe.as_mut() {
+            p.scratch.clear();
+            p.capture.drain_into(&mut p.scratch);
+            if !p.scratch.is_empty() {
+                if p.capturing {
+                    p.utterance.extend_from_slice(&p.scratch);
+                } else {
+                    let s = std::mem::take(&mut p.scratch);
+                    p.preroll.push_slice(&s);
+                    p.scratch = s;
+                }
+            }
+        }
+
         if SHUTDOWN.load(Ordering::Relaxed) {
             return;
         }
@@ -159,22 +197,22 @@ fn worker_main(ctx: WorkerCtx) {
         if let Some(reason) = watchdog.poll() {
             watchdog.on_capture_end();
             let actions = machine.handle(Event::ForcedEnd { at: Instant::now(), reason });
-            run_actions(&mut machine, actions, &ctx, &mut watchdog);
+            run_actions(&mut machine, actions, &ctx, &mut pipe, &mut watchdog);
             continue;
         }
 
         match ctx.rx.recv_timeout(policy::STUCK_KEY_POLL) {
             Ok(PttEvent::Down) => {
                 let a = machine.handle(Event::PttDown { at: Instant::now() });
-                run_actions(&mut machine, a, &ctx, &mut watchdog);
+                run_actions(&mut machine, a, &ctx, &mut pipe, &mut watchdog);
             }
             Ok(PttEvent::Up) => {
                 let a = machine.handle(Event::PttUp { at: Instant::now() });
-                run_actions(&mut machine, a, &ctx, &mut watchdog);
+                run_actions(&mut machine, a, &ctx, &mut pipe, &mut watchdog);
             }
             Ok(PttEvent::KillChord) => {
                 let a = machine.handle(Event::KillChord);
-                run_actions(&mut machine, a, &ctx, &mut watchdog);
+                run_actions(&mut machine, a, &ctx, &mut pipe, &mut watchdog);
             }
             Ok(PttEvent::LivenessPong) => tracing::trace!("hook liveness confirmed"),
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
@@ -187,18 +225,30 @@ fn run_actions(
     machine: &mut Fsm,
     actions: Vec<Action>,
     ctx: &WorkerCtx,
+    pipe: &mut Option<Pipeline>,
     watchdog: &mut StuckKeyWatchdog,
 ) {
     for action in actions {
         match action {
             Action::StartCapture { utterance_id } => {
                 watchdog.on_capture_start();
+                if let Some(p) = pipe.as_mut() {
+                    // Seed with the preroll: the user starts speaking slightly before the
+                    // key fully registers, and without this the first word is clipped.
+                    p.utterance.clear();
+                    p.utterance.extend_from_slice(&p.preroll.snapshot());
+                    p.capturing = true;
+                }
                 tracing::info!(utterance_id, "capture started");
                 println!("  [recording #{utterance_id}]");
             }
 
             Action::DiscardCapture { utterance_id, why } => {
                 watchdog.on_capture_end();
+                if let Some(p) = pipe.as_mut() {
+                    p.capturing = false;
+                    p.utterance.clear();
+                }
                 tracing::info!(utterance_id, why, "capture discarded");
                 println!("  [discarded #{utterance_id}: {why}]");
             }
@@ -216,12 +266,39 @@ fn run_actions(
                 tracing::info!(utterance_id, ?hold, cause = end_cause.as_str(), "capture finished");
                 println!("  [transcribing #{utterance_id}...]");
 
-                // Phase 1a stands in for inference with a fixed delay. Phase 3 swaps in
-                // the real backend; nothing around this changes.
-                std::thread::sleep(ctx.fake_latency);
+                let text = match pipe.as_mut() {
+                    Some(p) => {
+                        p.capturing = false;
+                        // A short grace after key-up: people release slightly early, and
+                        // this catches the last syllable.
+                        std::thread::sleep(policy::POST_RELEASE_GRACE);
+                        p.scratch.clear();
+                        p.capture.drain_into(&mut p.scratch);
+                        let tail = std::mem::take(&mut p.scratch);
+                        p.utterance.extend_from_slice(&tail);
+                        p.scratch = tail;
 
-                let a = machine.handle(Event::TranscriptReady { text: ctx.canned.clone() });
-                run_actions(machine, a, ctx, watchdog);
+                        transcribe_utterance(p, utterance_id)
+                    }
+                    None => {
+                        // No model loaded: canned text keeps the I/O path exercisable.
+                        std::thread::sleep(ctx.fake_latency);
+                        Some(ctx.canned.clone())
+                    }
+                };
+
+                match text {
+                    Some(t) => {
+                        let a = machine.handle(Event::TranscriptReady { text: t });
+                        run_actions(machine, a, ctx, pipe, watchdog);
+                    }
+                    None => {
+                        // Rejected as non-speech. Nothing is injected and nothing is said;
+                        // a toast on every accidental tap would be its own annoyance.
+                        let a = machine.handle(Event::TranscriptReady { text: String::new() });
+                        run_actions(machine, a, ctx, pipe, watchdog);
+                    }
+                }
             }
 
             Action::Deliver { utterance_id, text, hold, end_cause } => {
@@ -250,6 +327,85 @@ fn run_actions(
             }
         }
     }
+}
+
+
+/// Resample, trim to speech, transcribe, and judge.
+///
+/// Returns `None` when nothing worth injecting came out - either VAD found no speech (so
+/// inference was skipped entirely) or the hallucination filter rejected the result.
+fn transcribe_utterance(p: &mut Pipeline, utterance_id: u64) -> Option<String> {
+    let raw_secs = p.utterance.len() as f32 / p.device_rate as f32;
+
+    // Resample ONCE, here on the worker, never in the audio callback.
+    let t_resample = Instant::now();
+    let pcm = match audio::finalize(&p.utterance, p.device_rate) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(utterance_id, "resample failed: {e}");
+            return None;
+        }
+    };
+    let resample_ms = t_resample.elapsed().as_secs_f64() * 1000.0;
+
+    // VAD trim. `None` means genuinely no speech, so we never call the model at all -
+    // which is the cheapest possible fix for the most common hallucination case.
+    let t_vad = Instant::now();
+    let trimmed = match p.backend.vad_trim(&pcm) {
+        Some(t) => t,
+        None => {
+            tracing::info!(utterance_id, raw_secs, "no speech detected; skipping inference");
+            println!("  [#{utterance_id} no speech - skipped]");
+            return None;
+        }
+    };
+    let vad_ms = t_vad.elapsed().as_secs_f64() * 1000.0;
+    let trimmed_secs = trimmed.len() as f32 / crate::resample::TARGET_RATE as f32;
+
+    let hint = backend::Hint {
+        language: Some("en".into()),
+        prev_text: p.prev.as_ref().map(|(t, _)| t.clone()),
+        ..Default::default()
+    };
+
+    let transcript = match p.backend.transcribe(&trimmed, &hint) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(utterance_id, "inference failed: {e}");
+            println!("  [#{utterance_id} inference error: {e}]");
+            return None;
+        }
+    };
+
+    tracing::info!(
+        utterance_id,
+        raw_secs,
+        trimmed_secs,
+        resample_ms,
+        vad_ms,
+        infer_ms = transcript.inference.as_secs_f64() * 1000.0,
+        no_speech = transcript.max_no_speech,
+        "transcribed"
+    );
+
+    match postprocess::judge(&transcript) {
+        postprocess::Verdict::Accept => {}
+        postprocess::Verdict::Reject(reason) => {
+            tracing::info!(
+                utterance_id,
+                reason = reason.as_str(),
+                text = %transcript.text,
+                "rejected as non-speech"
+            );
+            println!("  [#{utterance_id} filtered: {} ({:?})]", reason.as_str(), transcript.text);
+            return None;
+        }
+    }
+
+    let join = postprocess::decide_join(p.prev.as_ref().map(|(t, i)| (t.as_str(), *i)));
+    let out = postprocess::apply_join(&transcript.text, join);
+    p.prev = Some((transcript.text.clone(), Instant::now()));
+    Some(out)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -327,8 +483,66 @@ fn deliver(job: DeliverJob, cb: &mut dyn ClipboardPort) {
     }
 }
 
-fn run_daemon(canned: String, fake_latency: Duration) {
+fn run_daemon(canned: String, fake_latency: Duration, model: Option<String>, threads: i32) {
     let main_thread = unsafe { GetCurrentThreadId() };
+
+    // Build the real pipeline if a model was given. Failure here is not fatal: falling
+    // back to canned text keeps the I/O half of the daemon usable and testable, which is
+    // more useful than refusing to start.
+    let pipeline = match model {
+        Some(path) => {
+            println!("loading model: {path}");
+            let vad_path = "models/ggml-silero-v6.2.0.bin";
+            match backend::WhisperCppBackend::new(
+                &path,
+                Some(vad_path),
+                threads,
+                false,
+            ) {
+                Ok(mut b) => {
+                    use backend::TranscriptionBackend;
+                    println!("  vad: {}", if b.has_vad() { "enabled" } else { "MISSING - no silence trimming" });
+                    print!("  warming... ");
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    let t0 = Instant::now();
+                    match b.warm() {
+                        Ok(()) => println!("{:?}", t0.elapsed()),
+                        Err(e) => println!("failed: {e}"),
+                    }
+
+                    match audio::start(None) {
+                        Ok(cap) => {
+                            let rate = cap.device_rate();
+                            println!("  audio: {rate} Hz, preroll {} frames", audio::preroll_frames(rate));
+                            Some(Pipeline {
+                                backend: Box::new(b),
+                                capture: cap,
+                                device_rate: rate,
+                                preroll: audio::PrerollRing::new(audio::preroll_frames(rate)),
+                                utterance: Vec::with_capacity(rate as usize * 30),
+                                scratch: Vec::with_capacity(8192),
+                                capturing: false,
+                                prev: None,
+                            })
+                        }
+                        Err(e) => {
+                            eprintln!("  audio FAILED: {e}");
+                            eprintln!("  falling back to canned text");
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  model load FAILED: {e}");
+                    eprintln!("  falling back to canned text");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let has_pipeline = pipeline.is_some();
 
     let (ptt_tx, ptt_rx) = bounded::<PttEvent>(64);
     let (job_tx, job_rx) = bounded::<DeliverJob>(8);
@@ -341,13 +555,16 @@ fn run_daemon(canned: String, fake_latency: Duration) {
     let worker = std::thread::Builder::new()
         .name("whisperrust-worker".into())
         .spawn(move || {
-            worker_main(WorkerCtx {
-                rx: ptt_rx,
-                jobs: job_tx,
-                main_thread,
-                canned,
-                fake_latency,
-            })
+            worker_main(
+                WorkerCtx {
+                    rx: ptt_rx,
+                    jobs: job_tx,
+                    main_thread,
+                    canned,
+                    fake_latency,
+                },
+                pipeline,
+            )
         })
         .expect("spawn worker");
 
@@ -355,7 +572,11 @@ fn run_daemon(canned: String, fake_latency: Duration) {
     let mut last_liveness = Instant::now();
     let mut last_health = Instant::now();
 
-    println!("Listening. Hold RIGHT CTRL, then release to inject the canned text.");
+    if has_pipeline {
+        println!("Listening. Hold RIGHT CTRL, speak, release.");
+    } else {
+        println!("Listening (NO MODEL - canned text). Hold RIGHT CTRL, then release.");
+    }
     println!(
         "Kill chord: tap Right Ctrl {}x within 1s. Ctrl+C to exit.",
         policy::KILL_CHORD_TAPS
@@ -500,14 +721,43 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(800);
 
+    let model = args
+        .iter()
+        .position(|a| a == "--model")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .or_else(|| {
+            // Convenience: pick up a model sitting in models/ without being told.
+            for candidate in [
+                "models/ggml-base.en.bin",
+                "models/ggml-small.en-q5_1.bin",
+                "models/ggml-tiny.en.bin",
+            ] {
+                if std::path::Path::new(candidate).exists() {
+                    return Some(candidate.to_string());
+                }
+            }
+            None
+        });
+
+    // 8 threads measured best on this hybrid P/E CPU; 14 was 23x slower (docs/TOOLING.md
+    // trap #6). Never default to "all logical processors".
+    let threads: i32 = args
+        .iter()
+        .position(|a| a == "--threads")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
+
     install_ctrlc_handler();
 
-    println!("WhisperRust - Phase 1a (canned text, no audio, no model)");
-    println!("  canned text  : {canned:?}");
-    println!("  fake latency : {latency_ms} ms");
+    match &model {
+        Some(m) => println!("WhisperRust - Phase 3 (model: {m}, {threads} threads)"),
+        None => println!("WhisperRust - no model found; canned-text mode"),
+    }
     println!();
 
-    run_daemon(canned, Duration::from_millis(latency_ms));
+    run_daemon(canned, Duration::from_millis(latency_ms), model, threads);
 }
 
 /// Ctrl+C, without taking a dependency for it.
