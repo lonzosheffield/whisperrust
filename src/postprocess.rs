@@ -37,15 +37,18 @@ const NO_SPEECH_THRESHOLD: f32 = 0.6;
 /// These are matched against the WHOLE transcript only. A partial match would be wrong:
 /// "thank you" is a perfectly normal thing to dictate in an email, and refusing to type it
 /// would be a worse bug than the one being fixed.
-const HALLUCINATIONS: &[&str] = &[
+/// Phrases Whisper emits for non-speech. Matched on the WHOLE normalized transcript only.
+///
+/// Split into two tiers deliberately. The first tier is never something a person dictates
+/// on purpose, so it is rejected outright. The second tier - "thank you", "okay", "yeah" -
+/// are things people genuinely say as complete replies in chat, so rejecting them on sight
+/// silently eats real dictation. Those are only rejected when the MODEL ALSO doubts the
+/// audio was speech.
+///
+/// Getting this wrong in the strict direction is worse than the bug: the user says
+/// "Thank you." into Slack, nothing appears, and nothing explains why.
+const HALLUCINATIONS_ALWAYS: &[&str] = &[
     "",
-    "you",
-    "thank you",
-    "thanks for watching",
-    "thank you for watching",
-    "thanks for watching!",
-    "please subscribe",
-    "like and subscribe",
     "blank audio",
     "blank",
     "inaudible",
@@ -53,21 +56,39 @@ const HALLUCINATIONS: &[&str] = &[
     "silence",
     "music",
     "applause",
-    "bye",
-    "bye bye",
+    "subtitles by the amara org community",
+    "transcription by castingwords com",
+    "subs by www zeoranger com",
+    "please subscribe",
+    "like and subscribe",
+    "thanks for watching",
+    "thank you for watching",
+];
+
+/// Plausible as real speech. Rejected only if `no_speech_prob` also exceeds
+/// [`AMBIGUOUS_NO_SPEECH`].
+const HALLUCINATIONS_IF_UNSURE: &[&str] = &[
+    "you",
+    "thank you",
+    "thanks",
     "okay",
     "ok",
     "yeah",
+    "yes",
+    "no",
     "so",
     "uh",
     "um",
     "hmm",
     "the",
     "i",
-    "subtitles by the amara org community",
-    "transcription by castingwords com",
-    "subs by www zeoranger com",
+    "bye",
+    "bye bye",
 ];
+
+/// Lower bar for the ambiguous tier: these phrases are real words, so we need the model to
+/// corroborate that the audio was not speech before discarding them.
+const AMBIGUOUS_NO_SPEECH: f32 = 0.25;
 
 /// Words per second above which a transcript is implausible for the audio length.
 ///
@@ -140,8 +161,13 @@ pub fn judge(t: &Transcript) -> Verdict {
         return Verdict::Reject(RejectReason::Empty);
     }
 
-    // Whole-transcript match only - see the note on HALLUCINATIONS.
-    if HALLUCINATIONS.contains(&norm.as_str()) {
+    // Tier 1: never a deliberate dictation.
+    if HALLUCINATIONS_ALWAYS.contains(&norm.as_str()) {
+        return Verdict::Reject(RejectReason::KnownHallucination);
+    }
+
+    // Tier 2: real words. Discard only with corroboration from the model.
+    if HALLUCINATIONS_IF_UNSURE.contains(&norm.as_str()) && t.max_no_speech > AMBIGUOUS_NO_SPEECH {
         return Verdict::Reject(RejectReason::KnownHallucination);
     }
 
@@ -251,26 +277,49 @@ mod tests {
     }
 
     #[test]
-    fn classic_hallucinations_are_rejected() {
+    fn unambiguous_hallucinations_are_always_rejected() {
         for s in [
-            "Thank you.",
             "Thanks for watching!",
             "Thanks for watching",
-            "you",
-            "You.",
             "[BLANK_AUDIO]",
             " . . . ",
             "Subtitles by the Amara.org community",
+            "[Applause]",
+            "(music)",
         ] {
             assert!(
-                matches!(judge(&tr(s, 0.1, 2.0)), Verdict::Reject(_)),
-                "should have rejected {s:?}"
+                matches!(judge(&tr(s, 0.05, 2.0)), Verdict::Reject(_)),
+                "should have rejected {s:?} even with low no_speech"
+            );
+        }
+    }
+
+    #[test]
+    fn real_one_word_replies_survive_when_the_model_is_confident() {
+        // Regression: these were rejected outright, so saying "Thank you." into Slack
+        // produced nothing at all and no explanation. They are ordinary dictation.
+        for s in ["Thank you.", "Okay.", "Yeah.", "Bye.", "Thanks."] {
+            assert_eq!(
+                judge(&tr(s, 0.02, 1.2)),
+                Verdict::Accept,
+                "{s:?} is a legitimate reply and must be typed"
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_phrases_are_rejected_when_the_model_doubts_the_audio() {
+        for s in ["Thank you.", "Okay.", "you"] {
+            assert!(
+                matches!(judge(&tr(s, 0.45, 1.2)), Verdict::Reject(_)),
+                "{s:?} with high no_speech should be filtered"
             );
         }
     }
 
     #[test]
     fn thank_you_inside_a_real_sentence_is_kept() {
+        // Whole-transcript matching, not substring - substring would eat these.
         // THE false-positive that would make this filter worse than the bug.
         // Substring matching would eat this; whole-transcript matching must not.
         assert_eq!(

@@ -135,6 +135,23 @@ pub fn wait_for_modifiers_to_settle() -> bool {
     !modifiers_physically_down()
 }
 
+/// Wait for modifiers to clear, asking the GUARD rather than the hardware.
+///
+/// `wait_for_modifiers_to_settle` reads `GetAsyncKeyState` directly, which silently
+/// bypasses the `InjectGuard` abstraction: in a test the mock guard could report modifiers
+/// held while the real keyboard reported none, so `inject()` took a different path under
+/// test than in production. Consulting the guard keeps one code path for both.
+fn wait_for_modifiers_via_guard(guard: &dyn InjectGuard) -> bool {
+    let deadline = Instant::now() + policy::MODIFIER_SETTLE_TIMEOUT;
+    while Instant::now() < deadline {
+        if !guard.modifiers_held() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    !guard.modifiers_held()
+}
+
 /// THE choke point for emitting an input event.
 ///
 /// I-5: refuses any virtual key outside the allowlist. In debug this panics loudly so a
@@ -267,13 +284,30 @@ pub fn inject(
     if !guard.may_continue() {
         return InjectOutcome::Aborted { after_chars: 0, reason: "kill_switch" };
     }
-    if guard.modifiers_held() && !wait_for_modifiers_to_settle() {
-        // Downgrade rather than sending a corrupted chord.
+    if guard.modifiers_held() && !wait_for_modifiers_via_guard(guard) {
+        // Downgrade rather than sending a corrupted chord - but the text must go
+        // SOMEWHERE. Returning ClipboardOnly without writing the clipboard made the
+        // variant's name a lie and silently destroyed the user's dictation.
+        if let Err(e) = clipboard.set_text(text) {
+            return InjectOutcome::Failed {
+                error: format!("modifiers held and clipboard unavailable: {e}"),
+            };
+        }
         return InjectOutcome::ClipboardOnly { reason: "modifiers_held" };
     }
 
     match clearance.method {
-        InjectMethod::Unicode => inject_unicode(text, guard),
+        InjectMethod::Unicode => {
+            let outcome = inject_unicode(text, guard);
+            // An abort leaves a PARTIAL paste in the target and the remainder nowhere.
+            // Put the full text on the clipboard so the user can recover it.
+            if let InjectOutcome::Aborted { .. } = outcome {
+                if let Err(e) = clipboard.set_text(text) {
+                    tracing::warn!("aborted injection and clipboard unavailable: {e}");
+                }
+            }
+            outcome
+        }
         InjectMethod::ClipboardPaste => {
             let prev = clipboard.snapshot_text();
             if let Err(e) = clipboard.set_text(text) {
@@ -284,8 +318,12 @@ pub fn inject(
             let seq_after_set = clipboard.sequence();
 
             if let Err(e) = send_paste_chord() {
-                clipboard.restore_text(prev, seq_after_set, &clearance.exe);
-                return InjectOutcome::Failed { error: e };
+                // PLAN B-06: no restore on any fallback path. The paste did not happen, so
+                // our text is the ONLY copy of what the user said; restoring the previous
+                // clipboard here would erase the dictation completely - the worst possible
+                // outcome, and worse than simply leaving our text where they can paste it.
+                tracing::warn!("paste chord failed ({e}); leaving dictation on the clipboard");
+                return InjectOutcome::ClipboardOnly { reason: "paste_failed" };
             }
 
             clipboard.restore_text(prev, seq_after_set, &clearance.exe);
@@ -429,6 +467,28 @@ mod tests {
         assert_eq!(
             inject(c, "hello", &g, &mut cb),
             InjectOutcome::Aborted { after_chars: 0, reason: "kill_switch" }
+        );
+    }
+
+    #[test]
+    fn clipboard_only_actually_writes_the_clipboard() {
+        // Regression: this returned ClipboardOnly WITHOUT writing anything, so the
+        // dictation was silently destroyed while the log said it had been copied.
+        let g = MockGuard { cont: true, mods: true };
+        let mut cb = MockClipboard::default();
+        let c = crate::preflight::test_clearance(InjectMethod::Unicode, "notepad.exe", 5);
+        let out = inject(c, "hello", &g, &mut cb);
+        assert!(
+            !matches!(out, InjectOutcome::Injected { .. }),
+            "must not claim to have typed while a modifier is held"
+        );
+        // The invariant that matters is not WHICH non-injected variant is returned, but
+        // that the dictation is recoverable afterwards. Asserting the variant would pin
+        // an implementation detail; asserting the clipboard pins the user-visible promise.
+        assert_eq!(
+            cb.content.as_deref(),
+            Some("hello"),
+            "text must be recoverable from the clipboard, whatever the outcome variant"
         );
     }
 

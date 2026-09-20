@@ -160,6 +160,14 @@ impl WinClipboard {
     }
 
     fn write_text(&mut self, text: &str) -> Result<(), String> {
+        write_text_raw(text)
+    }
+}
+
+/// Write text + privacy formats. Free function so the deferred-restore thread can use it
+/// without holding a `WinClipboard`.
+fn write_text_raw(text: &str) -> Result<(), String> {
+    {
         let _guard = open_clipboard_retrying()?;
         unsafe {
             EmptyClipboard().map_err(|e| format!("EmptyClipboard: {e}"))?;
@@ -178,8 +186,8 @@ impl WinClipboard {
             // Must happen while the clipboard is still open and owned by us.
             apply_privacy_formats();
         }
-        Ok(())
     }
+    Ok(())
 }
 
 impl ClipboardPort for WinClipboard {
@@ -196,9 +204,9 @@ impl ClipboardPort for WinClipboard {
     }
 
     fn restore_text(&mut self, prev: Option<String>, expected_seq: u32, exe: &str) {
-        // Nothing to restore, or the previous content was rich and we refused to
-        // snapshot it. Leaving our dictation on the clipboard is strictly better than
-        // replacing the user's spreadsheet cells with an empty string.
+        // Nothing to restore, or the previous content was rich and we refused to snapshot
+        // it. Leaving our dictation on the clipboard is strictly better than replacing the
+        // user's spreadsheet cells with an empty string.
         let Some(prev) = prev else {
             return;
         };
@@ -207,21 +215,42 @@ impl ClipboardPort for WinClipboard {
         }
 
         let delay = policy::restore_delay_ms(exe);
-        std::thread::sleep(Duration::from_millis(delay));
 
-        // B-06: if anything else wrote to the clipboard while we waited, our restore would
-        // clobber a newer value. Stand down.
-        let now = self.sequence();
-        if now != expected_seq {
-            tracing::debug!(
-                "clipboard changed during paste window (seq {expected_seq} -> {now}); not restoring"
-            );
-            return;
-        }
+        // ---------------------------------------------------------------------------
+        // THIS MUST NOT BLOCK THE CALLER.
+        //
+        // `restore_text` is reached from `deliver()`, which runs on the main thread - the
+        // thread that owns the WH_KEYBOARD_LL hook. A low-level hook procedure cannot run
+        // while its thread is sleeping, so sleeping here for 750-1500 ms stalls EVERY
+        // keystroke on the machine and invites Windows to silently unregister the hook,
+        // which is the failure the whole watchdog design exists to avoid. The project's
+        // own Phase 1a criterion calls a 1500 ms stall fatal; doing it deliberately was a
+        // self-inflicted version of the bug.
+        //
+        // So the wait and the restore happen on a detached helper thread. Clipboard calls
+        // are process-wide and thread-agnostic, so this is safe.
+        // ---------------------------------------------------------------------------
+        std::thread::Builder::new()
+            .name("whisperrust-clipboard-restore".into())
+            .spawn(move || {
+                std::thread::sleep(Duration::from_millis(delay));
 
-        if let Err(e) = self.write_text(&prev) {
-            tracing::warn!("clipboard restore failed: {e}");
-        }
+                // B-06: if anything else wrote to the clipboard while we waited, our
+                // restore would clobber a newer value. Stand down.
+                let now = unsafe { GetClipboardSequenceNumber() };
+                if now != expected_seq {
+                    tracing::debug!(
+                        "clipboard changed during paste window (seq {expected_seq} -> {now}); not restoring"
+                    );
+                    return;
+                }
+
+                if let Err(e) = write_text_raw(&prev) {
+                    tracing::warn!("clipboard restore failed: {e}");
+                }
+            })
+            .map(|_| ())
+            .unwrap_or_else(|e| tracing::warn!("could not spawn restore thread: {e}"));
     }
 }
 

@@ -260,7 +260,14 @@ impl WhisperCppBackend {
 impl TranscriptionBackend for WhisperCppBackend {
     fn transcribe(&mut self, pcm16k: &[f32], hint: &Hint) -> Result<Transcript, BackendError> {
         let audio = validate_pcm(pcm16k)?;
-        let audio_secs = audio.len() as f32 / TARGET_RATE as f32;
+        // Measure the REAL audio, not the padded buffer.
+        //
+        // validate_pcm pads short input up to 1.0 s so whisper.cpp behaves. Computing
+        // audio_secs from the padded length meant it was always >= 1.0, which silently
+        // killed the postprocess duration check (`audio_secs < 0.3` could never fire) and
+        // diluted the words-per-second sanity test 5x. The unit test for that layer built
+        // a Transcript by hand and so never noticed the layer was dead in production.
+        let audio_secs = pcm16k.len() as f32 / TARGET_RATE as f32;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_n_threads(self.threads);
@@ -370,6 +377,7 @@ impl Default for MockBackend {
 impl TranscriptionBackend for MockBackend {
     fn transcribe(&mut self, pcm16k: &[f32], _hint: &Hint) -> Result<Transcript, BackendError> {
         let audio = validate_pcm(pcm16k)?;
+        let _ = &audio;
         std::thread::sleep(self.latency);
         Ok(Transcript {
             text: self.reply.clone(),
@@ -381,7 +389,7 @@ impl TranscriptionBackend for MockBackend {
             }],
             max_no_speech: self.no_speech,
             inference: self.latency,
-            audio_secs: audio.len() as f32 / TARGET_RATE as f32,
+            audio_secs: pcm16k.len() as f32 / TARGET_RATE as f32,
         })
     }
     fn warm(&mut self) -> Result<(), BackendError> {
@@ -443,6 +451,20 @@ mod tests {
         let pcm: Vec<f32> = (0..16_000).map(|i| (i as f32 * 0.001).sin() * 0.5).collect();
         let out = validate_pcm(&pcm).unwrap();
         assert_eq!(out, pcm);
+    }
+
+    #[test]
+    fn audio_secs_reports_real_audio_not_padding() {
+        // Regression: audio_secs was computed from the PADDED buffer, so it was always
+        // >= 1.0 and the postprocess duration filter could never fire.
+        let mut b = MockBackend::default();
+        let short = vec![0.1f32; 3200]; // 200 ms
+        let t = b.transcribe(&short, &Hint::default()).unwrap();
+        assert!(
+            (t.audio_secs - 0.2).abs() < 0.001,
+            "expected 0.2s of real audio, got {}",
+            t.audio_secs
+        );
     }
 
     #[test]

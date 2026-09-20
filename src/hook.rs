@@ -253,6 +253,20 @@ pub fn reinstall(ptt_vk: u16) -> Result<(), String> {
     }
 }
 
+/// Clear the "PTT is held" latch.
+///
+/// Must be called whenever a capture ends by any route other than a real key-up.
+///
+/// The failure without it: release the PTT key while an elevated window has focus. UIPI
+/// hides that key-up from our hook, so `HELD` stays true. Watchdog B correctly ends the
+/// capture, but the user's NEXT press is then treated as autorepeat and swallowed - they
+/// press, nothing happens, and only the third press works. The FSM recovers; the hook does
+/// not, which is why the Phase 1a criterion "elevated terminal -> recovers" was true of one
+/// and false of the other.
+pub fn clear_held() {
+    HELD.store(false, Ordering::Relaxed);
+}
+
 /// Send Watchdog A's liveness probe and mark it in flight.
 ///
 /// Windows unregisters a `WH_KEYBOARD_LL` hook whose procedure is too slow, with no

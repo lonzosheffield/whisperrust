@@ -58,7 +58,16 @@ static WORKER_HEARTBEAT: Heartbeat = Heartbeat::new();
 /// A unit of work handed from worker to main for injection.
 struct DeliverJob {
     utterance_id: u64,
+    /// RAW transcript text. The join is deliberately NOT applied here.
     text: String,
+    /// How this utterance should attach to the previous one.
+    ///
+    /// Carried rather than pre-applied because `sanitize()` trims leading whitespace - it
+    /// has to, since raw model output is full of stray spacing. Applying the join before
+    /// sanitize meant the separator was added and then immediately trimmed away, gluing
+    /// every pair of consecutive dictations together ("First thought.Second thought.").
+    /// Both functions were individually correct; the bug lived only in their ordering.
+    join: postprocess::Join,
     hold: Duration,
     end_cause: preflight::EndCause,
     target_at_capture: Option<target::TargetContext>,
@@ -196,6 +205,10 @@ fn worker_main(ctx: WorkerCtx, mut pipe: Option<Pipeline>) {
         // was released while an elevated window had focus - must not hang here forever.
         if let Some(reason) = watchdog.poll() {
             watchdog.on_capture_end();
+            // D-5: this capture is ending WITHOUT a key-up having been observed, so the
+            // hook's autorepeat latch is stale. Leaving it set makes the user's next press
+            // invisible.
+            hook::clear_held();
             let actions = machine.handle(Event::ForcedEnd { at: Instant::now(), reason });
             run_actions(&mut machine, actions, &ctx, &mut pipe, &mut watchdog);
             continue;
@@ -228,6 +241,9 @@ fn run_actions(
     pipe: &mut Option<Pipeline>,
     watchdog: &mut StuckKeyWatchdog,
 ) {
+    // Join decision for the transcript currently being delivered. Set immediately before
+    // TranscriptReady is handed to the FSM.
+    let mut pending_join = postprocess::Join::Fresh;
     for action in actions {
         match action {
             Action::StartCapture { utterance_id } => {
@@ -266,29 +282,37 @@ fn run_actions(
                 tracing::info!(utterance_id, ?hold, cause = end_cause.as_str(), "capture finished");
                 println!("  [transcribing #{utterance_id}...]");
 
-                let text = match pipe.as_mut() {
+                let result: Option<(String, postprocess::Join)> = match pipe.as_mut() {
                     Some(p) => {
                         p.capturing = false;
-                        // A short grace after key-up: people release slightly early, and
-                        // this catches the last syllable.
-                        std::thread::sleep(policy::POST_RELEASE_GRACE);
-                        p.scratch.clear();
-                        p.capture.drain_into(&mut p.scratch);
-                        let tail = std::mem::take(&mut p.scratch);
-                        p.utterance.extend_from_slice(&tail);
-                        p.scratch = tail;
 
-                        transcribe_utterance(p, utterance_id)
+                        // Grace period after key-up: people release slightly early, so
+                        // this catches the last syllable. Keep draining and beating while
+                        // we wait - sleeping outright would stall the audio path.
+                        let grace_end = Instant::now() + policy::POST_RELEASE_GRACE;
+                        while Instant::now() < grace_end {
+                            std::thread::sleep(Duration::from_millis(10));
+                            WORKER_HEARTBEAT.beat();
+                            p.scratch.clear();
+                            p.capture.drain_into(&mut p.scratch);
+                            let tail = std::mem::take(&mut p.scratch);
+                            p.utterance.extend_from_slice(&tail);
+                            p.scratch = tail;
+                        }
+
+                        // Inference runs on its OWN thread. See transcribe_off_thread.
+                        transcribe_off_thread(p, utterance_id)
                     }
                     None => {
                         // No model loaded: canned text keeps the I/O path exercisable.
                         std::thread::sleep(ctx.fake_latency);
-                        Some(ctx.canned.clone())
+                        Some((ctx.canned.clone(), postprocess::Join::Fresh))
                     }
                 };
 
-                match text {
-                    Some(t) => {
+                match result {
+                    Some((t, join)) => {
+                        pending_join = join;
                         let a = machine.handle(Event::TranscriptReady { text: t });
                         run_actions(machine, a, ctx, pipe, watchdog);
                     }
@@ -305,6 +329,7 @@ fn run_actions(
                 let job = DeliverJob {
                     utterance_id,
                     text,
+                    join: pending_join,
                     hold,
                     end_cause,
                     target_at_capture: machine.target_at_capture.clone(),
@@ -330,28 +355,102 @@ fn run_actions(
 }
 
 
-/// Resample, trim to speech, transcribe, and judge.
+/// Run inference on a helper thread while the worker keeps draining audio and beating.
 ///
-/// Returns `None` when nothing worth injecting came out - either VAD found no speech (so
-/// inference was skipped entirely) or the hallucination filter rejected the result.
-fn transcribe_utterance(p: &mut Pipeline, utterance_id: u64) -> Option<String> {
-    let raw_secs = p.utterance.len() as f32 / p.device_rate as f32;
+/// # Why this is not inline
+///
+/// Running inference inline stopped the audio drain and the heartbeat for its whole
+/// duration - measured 1.75 s for an 11 s utterance and 3.6-4.4 s for 44 s. Three things
+/// broke as a result, none of which any unit test could see:
+///
+/// * the 2 s audio ring overran, losing audio. The Phase 2 soak reported zero overruns
+///   because its harness never stalls the drain - it measured a pipeline that does not
+///   exist in production.
+/// * the 3 s heartbeat went stale, so every long dictation was downgraded to
+///   "daemon degraded - clipboard only" and the hook went transparent mid-use.
+/// * a PTT press during inference was processed afterwards with `hold ~= 0` and discarded
+///   as an accidental tap, silently losing the next thing the user said.
+fn transcribe_off_thread(
+    p: &mut Pipeline,
+    utterance_id: u64,
+) -> Option<(String, postprocess::Join)> {
+    let utterance = std::mem::take(&mut p.utterance);
+    let device_rate = p.device_rate;
+    let prev_text = p.prev.as_ref().map(|(t, _)| t.clone());
+    let join = postprocess::decide_join(p.prev.as_ref().map(|(t, i)| (t.as_str(), *i)));
 
-    // Resample ONCE, here on the worker, never in the audio callback.
-    let t_resample = Instant::now();
-    let pcm = match audio::finalize(&p.utterance, p.device_rate) {
+    // The backend is owned by the pipeline and is not Sync, so it is moved across for the
+    // duration and moved back. The worker cannot start another inference meanwhile - the
+    // FSM is in Finalizing - so there is no contention.
+    let mut engine =
+        std::mem::replace(&mut p.backend, Box::new(backend::MockBackend::default()));
+
+    type InferResult = (Box<dyn backend::TranscriptionBackend>, Option<String>);
+    let (tx, rx) = crossbeam_channel::bounded::<InferResult>(1);
+
+    if std::thread::Builder::new()
+        .name("whisperrust-infer".into())
+        .spawn(move || {
+            let text =
+                run_inference(&mut engine, &utterance, device_rate, prev_text, utterance_id);
+            let _ = tx.send((engine, text));
+        })
+        .is_err()
+    {
+        tracing::error!(utterance_id, "could not spawn inference thread");
+        return None;
+    }
+
+    // Keep the audio path and the health signal alive while we wait.
+    let text = loop {
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok((b, text)) => {
+                p.backend = b;
+                break text;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                WORKER_HEARTBEAT.beat();
+                p.scratch.clear();
+                p.capture.drain_into(&mut p.scratch);
+                if !p.scratch.is_empty() {
+                    let s = std::mem::take(&mut p.scratch);
+                    p.preroll.push_slice(&s);
+                    p.scratch = s;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                tracing::error!(utterance_id, "inference thread died");
+                break None;
+            }
+        }
+    };
+
+    let text = text?;
+    p.prev = Some((text.clone(), Instant::now()));
+    Some((text, join))
+}
+
+/// The inference body. Owns its audio, so it can run anywhere.
+fn run_inference(
+    engine: &mut Box<dyn backend::TranscriptionBackend>,
+    utterance: &[f32],
+    device_rate: u32,
+    prev_text: Option<String>,
+    utterance_id: u64,
+) -> Option<String> {
+    let raw_secs = utterance.len() as f32 / device_rate as f32;
+
+    let pcm = match audio::finalize(utterance, device_rate) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(utterance_id, "resample failed: {e}");
             return None;
         }
     };
-    let resample_ms = t_resample.elapsed().as_secs_f64() * 1000.0;
 
-    // VAD trim. `None` means genuinely no speech, so we never call the model at all -
-    // which is the cheapest possible fix for the most common hallucination case.
-    let t_vad = Instant::now();
-    let trimmed = match p.backend.vad_trim(&pcm) {
+    // VAD returning None means genuinely no speech, so the model is never called - the
+    // cheapest possible fix for the most common hallucination case.
+    let trimmed = match engine.vad_trim(&pcm) {
         Some(t) => t,
         None => {
             tracing::info!(utterance_id, raw_secs, "no speech detected; skipping inference");
@@ -359,16 +458,14 @@ fn transcribe_utterance(p: &mut Pipeline, utterance_id: u64) -> Option<String> {
             return None;
         }
     };
-    let vad_ms = t_vad.elapsed().as_secs_f64() * 1000.0;
-    let trimmed_secs = trimmed.len() as f32 / crate::resample::TARGET_RATE as f32;
 
     let hint = backend::Hint {
         language: Some("en".into()),
-        prev_text: p.prev.as_ref().map(|(t, _)| t.clone()),
+        prev_text,
         ..Default::default()
     };
 
-    let transcript = match p.backend.transcribe(&trimmed, &hint) {
+    let transcript = match engine.transcribe(&trimmed, &hint) {
         Ok(t) => t,
         Err(e) => {
             tracing::error!(utterance_id, "inference failed: {e}");
@@ -380,32 +477,20 @@ fn transcribe_utterance(p: &mut Pipeline, utterance_id: u64) -> Option<String> {
     tracing::info!(
         utterance_id,
         raw_secs,
-        trimmed_secs,
-        resample_ms,
-        vad_ms,
+        trimmed_secs = transcript.audio_secs,
         infer_ms = transcript.inference.as_secs_f64() * 1000.0,
         no_speech = transcript.max_no_speech,
         "transcribed"
     );
 
     match postprocess::judge(&transcript) {
-        postprocess::Verdict::Accept => {}
+        postprocess::Verdict::Accept => Some(transcript.text),
         postprocess::Verdict::Reject(reason) => {
-            tracing::info!(
-                utterance_id,
-                reason = reason.as_str(),
-                text = %transcript.text,
-                "rejected as non-speech"
-            );
-            println!("  [#{utterance_id} filtered: {} ({:?})]", reason.as_str(), transcript.text);
-            return None;
+            tracing::info!(utterance_id, reason = reason.as_str(), "rejected as non-speech");
+            println!("  [#{utterance_id} filtered: {}]", reason.as_str());
+            None
         }
     }
-
-    let join = postprocess::decide_join(p.prev.as_ref().map(|(t, i)| (t.as_str(), *i)));
-    let out = postprocess::apply_join(&transcript.text, join);
-    p.prev = Some((transcript.text.clone(), Instant::now()));
-    Some(out)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -426,10 +511,15 @@ impl InjectGuard for MainGuard {
 
 /// Take a delivery job through preflight, then act on the decision.
 fn deliver(job: DeliverJob, cb: &mut dyn ClipboardPort) {
-    let (clean, report) = sanitize::sanitize(&job.text);
+    // ORDER MATTERS. Sanitize the raw model output first - it legitimately trims stray
+    // leading/trailing whitespace - and only then apply the join separator. Doing it the
+    // other way round added a space and then trimmed it back off, which glued every pair
+    // of consecutive dictations together.
+    let (sanitized, report) = sanitize::sanitize(&job.text);
     if !report.is_clean() {
         tracing::info!(utterance_id = job.utterance_id, ?report, "sanitizer modified text");
     }
+    let clean = postprocess::apply_join(&sanitized, job.join);
 
     let now = target::probe();
     let req = Request {
