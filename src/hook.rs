@@ -133,6 +133,19 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
     let vk = PTT_VK.load(Ordering::Relaxed);
 
+    // Watchdog A's liveness pong. Checked BEFORE the PTT comparison because the probe
+    // deliberately uses an inert key, not the PTT key - pressing the real PTT key to
+    // prove the hook is alive would fabricate a dictation.
+    if kb.flags.contains(LLKHF_INJECTED)
+        && kb.dwExtraInfo == policy::OUR_MAGIC
+        && LIVENESS_PENDING.swap(false, Ordering::Relaxed)
+    {
+        if let Some(tx) = &*std::ptr::addr_of!(TX) {
+            let _ = tx.try_send(PttEvent::LivenessPong);
+        }
+        return CallNextHookEx(None, code, wparam, lparam);
+    }
+
     if kb.vkCode == vk {
         let msg = wparam.0 as u32;
         let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
@@ -142,14 +155,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         // so nobody can drive the PTT remotely.
         let injected = kb.flags.contains(LLKHF_INJECTED);
         if injected {
-            if kb.dwExtraInfo == policy::OUR_MAGIC && LIVENESS_PENDING.swap(false, Ordering::Relaxed)
-            {
-                // Watchdog A's probe came back: the hook is alive.
-                if let Some(tx) = &*std::ptr::addr_of!(TX) {
-                    let _ = tx.try_send(PttEvent::LivenessPong);
-                }
-            }
-            // Never treat synthetic input as a real PTT press.
+            // I-7: never treat synthetic input as a real PTT press, so no other process
+            // can trigger a dictation.
             return CallNextHookEx(None, code, wparam, lparam);
         }
 
@@ -168,6 +175,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     let _ = tx.try_send(PttEvent::Up);
                 }
                 if record_tap_and_check() {
+                    // Clear the ring, or every subsequent key-up still sees a full
+                    // window of recent taps and re-fires the chord forever.
+                    for t in TAP_TIMES.iter() {
+                        t.store(0, Ordering::Relaxed);
+                    }
                     if let Some(tx) = &*std::ptr::addr_of!(TX) {
                         let _ = tx.try_send(PttEvent::KillChord);
                     }
@@ -241,9 +253,44 @@ pub fn reinstall(ptt_vk: u16) -> Result<(), String> {
     }
 }
 
-/// Mark that a liveness probe is in flight (Watchdog A).
-pub fn arm_liveness_probe() {
+/// Send Watchdog A's liveness probe and mark it in flight.
+///
+/// Windows unregisters a `WH_KEYBOARD_LL` hook whose procedure is too slow, with no
+/// notification whatsoever. The only way to know we are still installed is to push an
+/// event through the hook and see it come back.
+///
+/// The probe is a **key-UP for `VK_NONAME` (0xFC)**, an unassigned virtual key. A key-up
+/// for a key that was never down is inert: no application acts on it, nothing is typed.
+/// It is deliberately NOT the PTT key - synthesizing that to prove liveness would
+/// fabricate a dictation - and it is tagged with `OUR_MAGIC` so the hook can recognize it.
+pub fn send_liveness_probe() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    };
+    const VK_NONAME: u16 = 0xFC;
+
     LIVENESS_PENDING.store(true, Ordering::Relaxed);
+
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(VK_NONAME),
+                wScan: 0,
+                dwFlags: KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: policy::OUR_MAGIC,
+            },
+        },
+    };
+    unsafe {
+        SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// The virtual-key code currently bound to PTT.
+pub fn ptt_vk() -> u16 {
+    PTT_VK.load(Ordering::Relaxed) as u16
 }
 
 /// True if the probe has not come back yet.
@@ -374,6 +421,41 @@ mod tests {
     fn watchdog_reports_nothing_when_idle() {
         let w = StuckKeyWatchdog::new();
         assert_eq!(w.poll(), None);
+    }
+
+    #[test]
+    fn liveness_probe_is_actually_sent_not_just_armed() {
+        // Regression, observed live: arm_liveness_probe() set the pending flag but nothing
+        // ever pushed an event through the hook, so the probe was permanently
+        // "unanswered" and Watchdog A tore down and reinstalled the hook every 30s.
+        // The log showed "hook liveness probe unanswered; reinstalling" during normal use.
+        let src = include_str!("hook.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            body.contains("fn send_liveness_probe"),
+            "the probe must be sent, not merely armed"
+        );
+        assert!(
+            body.contains("SendInput") && body.contains("LIVENESS_PENDING.store(true"),
+            "send_liveness_probe must both arm the flag and emit an event"
+        );
+    }
+
+    #[test]
+    fn kill_chord_ring_is_cleared_after_firing() {
+        // Regression: without clearing, every later key-up still saw a full window of
+        // recent taps and re-fired the chord.
+        let src = include_str!("hook.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap();
+        let fired = body
+            .split("if record_tap_and_check()")
+            .nth(1)
+            .expect("kill chord branch present");
+        let branch = &fired[..fired.len().min(400)];
+        assert!(
+            branch.contains("t.store(0"),
+            "tap ring must be cleared when the chord fires"
+        );
     }
 
     #[test]

@@ -79,7 +79,23 @@ apps rather than assuming.
    releasing the PTT key with no dictation must produce *no* visible effect — no menu
    activation, no focus change, no input.
 
-## Caveat — synthetic vs physical input
+## Physical-key run — CONFIRMED (2026-09-20)
+
+The synthetic result was reproduced with a human holding the key. `INJ=0` on both trials
+confirms these were genuine hardware events, not injected ones:
+
+| Mode | Hook saw key-down | `GetAsyncKeyState` | `GetKeyState` |
+|---|---|---|---|
+| PASSTHROUGH | 112 | **DOWN** | **DOWN** |
+| SWALLOW | 77 | **UP throughout** | **UP throughout** |
+
+The caveat below is therefore closed: the finding holds for real physical input.
+
+A second thing this run measured: **112 key-down events over a ~6.5 s hold.** Autorepeat is
+heavy, which is why the production hook squashes it with a single `HELD.swap()` rather than
+treating every `WM_KEYDOWN` as a press.
+
+## Original caveat — synthetic vs physical input (now closed)
 
 The automated run drives the key with `SendInput`. Injected input traverses the same path
 as physical input after the hook, so the mechanism under test is identical, and the result

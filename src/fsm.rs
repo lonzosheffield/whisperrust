@@ -198,6 +198,16 @@ impl Fsm {
                 vec![Action::StartCapture { utterance_id: self.current_id }]
             }
 
+            // ---------------- Disabled ----------------
+            // MUST come before the KillChord catch-all below. Match arms are ordered, and
+            // with KillChord first every further tap re-fired Disable - observed in the
+            // first live run as eight consecutive "disabled" lines.
+            (State::Disabled, Event::ReEnable) => {
+                self.state = State::Idle;
+                return vec![Action::Notify("WhisperRust re-enabled")];
+            }
+            (State::Disabled, _) => return vec![],
+
             // ---------------- Kill chord ----------------
             (_, Event::KillChord) => {
                 let mut actions = vec![];
@@ -213,14 +223,6 @@ impl Fsm {
                 actions.push(Action::Disable);
                 actions
             }
-
-            (State::Disabled, Event::ReEnable) => {
-                self.state = State::Idle;
-                vec![Action::Notify("WhisperRust re-enabled")]
-            }
-
-            // Anything arriving in Disabled is ignored on purpose.
-            (State::Disabled, _) => vec![],
 
             // Stray key-up with no capture in flight (for example the key-down happened
             // over an elevated window). Harmless; ignore it.
@@ -328,6 +330,24 @@ mod tests {
         assert!(a.contains(&Action::DiscardCapture { utterance_id: 1, why: "kill_chord" }));
         assert!(a.contains(&Action::Disable));
         assert_eq!(f.state(), State::Disabled);
+    }
+
+    #[test]
+    fn kill_chord_fires_once_not_repeatedly() {
+        // Regression, observed live: match arms are ordered, and with the KillChord
+        // catch-all placed before the Disabled arm every further tap re-ran Disable.
+        // The log showed eight consecutive "disabled" lines from one chord.
+        let mut f = Fsm::new();
+        let first = f.handle(Event::KillChord);
+        assert!(first.contains(&Action::Disable));
+
+        for _ in 0..5 {
+            let again = f.handle(Event::KillChord);
+            assert!(
+                again.is_empty(),
+                "kill chord re-fired while already disabled: {again:?}"
+            );
+        }
     }
 
     #[test]

@@ -395,7 +395,7 @@ fn run_daemon(canned: String, fake_latency: Duration) {
                     tracing::error!("hook reinstall failed: {e}");
                 }
             }
-            hook::arm_liveness_probe();
+            hook::send_liveness_probe();
         }
 
         if last_health.elapsed() >= Duration::from_millis(500) {

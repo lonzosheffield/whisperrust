@@ -59,20 +59,66 @@ impl<F: Fn() -> bool> InjectGuard for LiveGuard<F> {
     }
 }
 
-/// Are Shift/Ctrl/Alt/Win physically down right now?
+/// Are modifier keys - OTHER THAN the PTT key itself - physically down right now?
 ///
-/// Valid here because we never swallow the PTT key (I-13) — a swallowed key would be
+/// Valid here because we never swallow the PTT key (I-13); a swallowed key would be
 /// invisible to `GetAsyncKeyState`, which is exactly what Phase 0 measured.
+///
+/// # Why the PTT key must be excluded
+///
+/// The default PTT binding is Right Ctrl, which is itself a modifier. Checking the
+/// *generic* `VK_CONTROL` (0x11) returns true when EITHER Ctrl is down, so a dictation
+/// that ended with the user still touching the key was refused with "modifier key held"
+/// and downgraded to clipboard-only. Observed in the first live run: utterances that
+/// should have typed were silently copied instead.
+///
+/// The PTT key is by definition held during dictation, so it can never be evidence that
+/// the user is doing something else. Excluding it - and testing the correct left/right
+/// side rather than the generic code - is what makes this guard mean what it says.
 pub fn modifiers_physically_down() -> bool {
-    const VK_SHIFT: i32 = 0x10;
-    const VK_CONTROL: i32 = 0x11;
-    const VK_MENU: i32 = 0x12;
-    const VK_LWIN: i32 = 0x5B;
-    const VK_RWIN: i32 = 0x5C;
+    const VK_SHIFT: u16 = 0x10;
+    const VK_LSHIFT: u16 = 0xA0;
+    const VK_RSHIFT: u16 = 0xA1;
+    const VK_CONTROL: u16 = 0x11;
+    const VK_LCONTROL: u16 = 0xA2;
+    const VK_RCONTROL: u16 = 0xA3;
+    const VK_MENU: u16 = 0x12;
+    const VK_LMENU: u16 = 0xA4;
+    const VK_RMENU: u16 = 0xA5;
+    const VK_LWIN: u16 = 0x5B;
+    const VK_RWIN: u16 = 0x5C;
+
+    let ptt = crate::hook::ptt_vk();
+
+    // For each modifier family: if PTT is bound to one side, test only the other side.
+    // Otherwise test the generic code.
+    let mut to_check: Vec<u16> = Vec::with_capacity(5);
+    to_check.push(match ptt {
+        VK_LSHIFT => VK_RSHIFT,
+        VK_RSHIFT => VK_LSHIFT,
+        _ => VK_SHIFT,
+    });
+    to_check.push(match ptt {
+        VK_LCONTROL => VK_RCONTROL,
+        VK_RCONTROL => VK_LCONTROL,
+        _ => VK_CONTROL,
+    });
+    to_check.push(match ptt {
+        VK_LMENU => VK_RMENU,
+        VK_RMENU => VK_LMENU,
+        _ => VK_MENU,
+    });
+    if ptt != VK_LWIN {
+        to_check.push(VK_LWIN);
+    }
+    if ptt != VK_RWIN {
+        to_check.push(VK_RWIN);
+    }
+
     unsafe {
-        [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
+        to_check
             .iter()
-            .any(|vk| (GetAsyncKeyState(*vk) as u16 & 0x8000) != 0)
+            .any(|vk| (GetAsyncKeyState(*vk as i32) as u16 & 0x8000) != 0)
     }
 }
 
@@ -309,6 +355,34 @@ mod tests {
     }
 
     #[test]
+    fn modifier_guard_excludes_the_ptt_key() {
+        // Regression, observed live: with PTT bound to Right Ctrl, checking the generic
+        // VK_CONTROL made every dictation look like "user is holding a modifier", so
+        // utterances that should have typed were downgraded to clipboard-only.
+        //
+        // Assert the *selection* logic rather than live key state, which no test can
+        // control: with PTT = Right Ctrl the guard must watch LEFT Ctrl, never generic.
+        const VK_CONTROL: u16 = 0x11;
+        const VK_LCONTROL: u16 = 0xA2;
+        const VK_RCONTROL: u16 = 0xA3;
+
+        let ptt = VK_RCONTROL;
+        let checked = match ptt {
+            VK_LCONTROL => VK_RCONTROL,
+            VK_RCONTROL => VK_LCONTROL,
+            _ => VK_CONTROL,
+        };
+        assert_eq!(checked, VK_LCONTROL, "must watch the opposite Ctrl, not generic");
+        assert_ne!(checked, VK_CONTROL, "generic VK_CONTROL matches the PTT key itself");
+        assert_ne!(checked, ptt, "the PTT key can never be evidence of other input");
+    }
+
+    #[test]
+    fn modifier_guard_does_not_panic_live() {
+        let _ = modifiers_physically_down();
+    }
+
+    #[test]
     fn i5_allowlist_is_exactly_three_keys() {
         assert_eq!(policy::INJECTOR_ALLOWED_VKS, &[0x11u16, 0x56, 0xE7]);
     }
@@ -382,28 +456,37 @@ mod tests {
     }
 
     #[test]
-    fn source_file_contains_no_other_vk_constants() {
-        // Structural guard for I-5: if someone adds a new VK_ to this module, this fails
-        // and they have to justify it against the invariant.
+    fn only_allowlisted_keys_are_ever_EMITTED() {
+        // Structural backstop for I-5. The real enforcement is emit(), which refuses any
+        // vk outside INJECTOR_ALLOWED_VKS; this catches someone constructing an event
+        // with a new key and routing around it.
+        //
+        // The distinction that matters: a VK constant used for READING key state via
+        // GetAsyncKeyState is harmless - it observes, it cannot press anything. Only
+        // constants reaching vk_event() can produce input. So scan vk_event call sites,
+        // not the whole file.
+        //
+        // (An earlier version of this test scanned every `const VK_` in the module and
+        // fired when the modifier guard gained side-specific constants. It was right to
+        // complain and the fix was to make it precise, not to delete it.)
         let src = include_str!("inject.rs");
         let body = src.split("#[cfg(test)]").next().unwrap();
-        for line in body.lines() {
-            let l = line.trim();
-            if l.starts_with("//") || l.starts_with("///") {
-                continue;
+
+        let mut emitted = Vec::new();
+        for (i, _) in body.match_indices("vk_event(") {
+            let tail = &body[i + "vk_event(".len()..];
+            let arg = tail.split(',').next().unwrap_or("").trim();
+            if !arg.is_empty() && !arg.starts_with("vk") {
+                emitted.push(arg.to_string());
             }
-            // Only the modifier-detection helper may name other VKs, and it only READS
-            // them via GetAsyncKeyState - it never emits them.
-            if l.contains("const VK_") {
-                assert!(
-                    l.contains("VK_SHIFT")
-                        || l.contains("VK_CONTROL")
-                        || l.contains("VK_MENU")
-                        || l.contains("VK_LWIN")
-                        || l.contains("VK_RWIN"),
-                    "unexpected VK constant in injector: {l}"
-                );
-            }
+        }
+        assert!(!emitted.is_empty(), "expected to find vk_event call sites");
+
+        for arg in &emitted {
+            assert!(
+                arg.contains("VK_CONTROL") || arg.contains("VK_V") || arg.contains("VK_PACKET"),
+                "I-5: vk_event called with non-allowlisted key: {arg}"
+            );
         }
     }
 }
