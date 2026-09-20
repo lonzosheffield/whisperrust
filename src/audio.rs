@@ -54,7 +54,21 @@ pub struct AudioStats {
     /// timing out with a bare "no sample rate".
     pub last_error: std::sync::Mutex<Option<String>>,
     /// Frames dropped because the worker could not keep up. Must stay 0.
+    ///
+    /// NOTE: this counter can only see OUR ring. It is blind to audio the OS drops
+    /// beneath us - see `stream_errors`.
     pub overruns: AtomicU64,
+
+    /// cpal error-callback events, overwhelmingly WASAPI `DATA_DISCONTINUITY`.
+    ///
+    /// This exists because "zero ring overruns" was reported as evidence of "no dropped
+    /// audio" during the CP-2 soak, and it was not: 62 of these fired and ~1.4 s of audio
+    /// was lost at the WASAPI layer, BEFORE it ever reached our ring. The ring counter
+    /// structurally could not see it, and the errors went only to the log, where the
+    /// summary omitted them.
+    ///
+    /// Counting them makes OS-level loss visible to the criterion that depends on it.
+    pub stream_errors: AtomicU64,
     /// Total frames captured since start.
     pub frames: AtomicU64,
     /// Milliseconds since the last callback, for the silent-death watchdog.
@@ -177,6 +191,15 @@ impl AudioCapture {
         self.stats.rate.load(Ordering::Relaxed) as u32
     }
 
+    pub fn ring_overruns(&self) -> u64 {
+        self.stats.overruns.load(Ordering::Relaxed)
+    }
+
+    /// OS-level audio loss. Non-zero means audio was dropped before it reached us.
+    pub fn stream_errors(&self) -> u64 {
+        self.stats.stream_errors.load(Ordering::Relaxed)
+    }
+
     /// True if the stream has stopped producing callbacks.
     ///
     /// WASAPI can fail *silently*: no error callback, just no more audio. Sleep/resume and
@@ -283,7 +306,9 @@ fn build_stream(
 
     let err_stats = Arc::clone(&stats);
     let err_fn = move |e| {
-        // Cannot log from the RT thread cheaply; record and let the supervisor react.
+        // Count first, log second. The count is what a pass criterion can be written
+        // against; a log line is something a summary can quietly omit.
+        err_stats.stream_errors.fetch_add(1, Ordering::Relaxed);
         err_stats.last_callback_ms.store(0, Ordering::Relaxed);
         tracing::error!("audio stream error: {e}");
     };

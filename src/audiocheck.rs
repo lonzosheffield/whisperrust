@@ -143,10 +143,11 @@ pub fn run(seconds: u64, out_dir: &str) -> i32 {
             last_report = Instant::now();
             let st = &cap.stats;
             println!(
-                "  t={:>4}s  frames={:<10} overruns={:<6} rebuilds={} rss={:.1}MB",
+                "  t={:>4}s  frames={:<10} overruns={:<4} os_errors={:<4} rebuilds={} rss={:.1}MB",
                 start.elapsed().as_secs(),
                 st.frames.load(std::sync::atomic::Ordering::Relaxed),
                 st.overruns.load(std::sync::atomic::Ordering::Relaxed),
+                st.stream_errors.load(std::sync::atomic::Ordering::Relaxed),
                 st.rebuilds.load(std::sync::atomic::Ordering::Relaxed),
                 rss as f64 / 1_048_576.0
             );
@@ -157,6 +158,7 @@ pub fn run(seconds: u64, out_dir: &str) -> i32 {
 
     let st = &cap.stats;
     let overruns = st.overruns.load(std::sync::atomic::Ordering::Relaxed);
+    let stream_errors = st.stream_errors.load(std::sync::atomic::Ordering::Relaxed);
     let frames = st.frames.load(std::sync::atomic::Ordering::Relaxed);
     let rebuilds = st.rebuilds.load(std::sync::atomic::Ordering::Relaxed);
     let rss_growth = rss_peak.saturating_sub(rss_start);
@@ -190,7 +192,16 @@ pub fn run(seconds: u64, out_dir: &str) -> i32 {
     println!("retained frames     : {} (first {}s)", captured.len(), RETAIN_SECS);
     println!("streamed-past frames: {discarded_frames} (drained, not retained)");
     println!("callback frames     : {frames}");
+    {
+        let expected = (seconds as u64) * rate as u64;
+        let deficit = expected.saturating_sub(frames);
+        println!(
+            "expected frames     : {expected}  (deficit {deficit} = {:.2}s)",
+            deficit as f64 / rate as f64
+        );
+    }
     println!("ring overruns       : {overruns}   (criterion: 0)");
+    println!("OS stream errors    : {stream_errors}   (criterion: 0 - WASAPI dropped audio)");
     println!("stream rebuilds     : {rebuilds}");
     println!("rss start           : {:.1} MB", rss_start as f64 / 1_048_576.0);
     println!("rss peak            : {:.1} MB", rss_peak as f64 / 1_048_576.0);
@@ -212,6 +223,13 @@ pub fn run(seconds: u64, out_dir: &str) -> i32 {
     let mut fails: Vec<String> = Vec::new();
     if overruns != 0 {
         fails.push(format!("ring overruns = {overruns}, must be 0"));
+    }
+    if stream_errors != 0 {
+        // The criterion's INTENT is "no dropped audio". The ring counter cannot see loss
+        // that happens below us, so this is the check that actually enforces it.
+        fails.push(format!(
+            "OS stream errors = {stream_errors}, must be 0 (WASAPI dropped audio before it reached the ring)"
+        ));
     }
     if rss_growth > 5 * 1_048_576 {
         fails.push(format!("rss grew {:.1} MB, limit 5", rss_growth as f64 / 1_048_576.0));

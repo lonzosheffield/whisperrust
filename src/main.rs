@@ -32,6 +32,8 @@ mod policy;
 mod postprocess;
 mod preflight;
 mod resample;
+mod session_log;
+mod stats;
 mod sanitize;
 mod target;
 mod uia;
@@ -56,6 +58,24 @@ static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static DISABLED: AtomicBool = AtomicBool::new(false);
 static WORKER_HEARTBEAT: Heartbeat = Heartbeat::new();
 
+/// Timings and model facts gathered during inference, carried to the session log.
+///
+/// Collected here rather than logged in place because a latency number is only meaningful
+/// next to the decision it produced: "1.4 s" means something different when the text was
+/// typed than when a guard refused it.
+#[derive(Debug, Default, Clone)]
+struct InferMetrics {
+    raw_audio_secs: f32,
+    trimmed_audio_secs: f32,
+    resample_ms: f64,
+    vad_ms: f64,
+    infer_ms: f64,
+    no_speech_prob: f32,
+    verdict: String,
+    model: String,
+    threads: i32,
+}
+
 /// A unit of work handed from worker to main for injection.
 struct DeliverJob {
     utterance_id: u64,
@@ -72,6 +92,14 @@ struct DeliverJob {
     hold: Duration,
     end_cause: preflight::EndCause,
     target_at_capture: Option<target::TargetContext>,
+    /// When the PTT key was released. The CP-3 criterion is p95 of release-to-delivered,
+    /// so the clock has to start here rather than at inference.
+    released_at: Instant,
+    metrics: InferMetrics,
+    /// Cumulative audio-health counters at the time of this utterance.
+    ring_overruns: u64,
+    stream_errors: u64,
+    device_rate: u32,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -245,6 +273,11 @@ fn run_actions(
     // Join decision for the transcript currently being delivered. Set immediately before
     // TranscriptReady is handed to the FSM.
     let mut pending_join = postprocess::Join::Fresh;
+    let mut last_metrics = InferMetrics::default();
+    let mut last_audio_health = (0u64, 0u64);
+    let mut last_device_rate = 0u32;
+    // Clock for the CP-3 criterion: release to text delivered.
+    let mut released_at = Instant::now();
     for action in actions {
         match action {
             Action::StartCapture { utterance_id } => {
@@ -272,6 +305,7 @@ fn run_actions(
 
             Action::FinishCapture { utterance_id, hold, end_cause } => {
                 watchdog.on_capture_end();
+                released_at = Instant::now();
 
                 // Record where the text was aimed at the moment the user stopped
                 // speaking. preflight compares this against the target at inject time,
@@ -302,11 +336,20 @@ fn run_actions(
                         }
 
                         // Inference runs on its OWN thread. See transcribe_off_thread.
-                        transcribe_off_thread(p, utterance_id)
+                        let (r, m) = transcribe_off_thread(p, utterance_id);
+                        last_metrics = m;
+                        last_audio_health = (p.capture.ring_overruns(), p.capture.stream_errors());
+                        last_device_rate = p.device_rate;
+                        r
                     }
                     None => {
                         // No model loaded: canned text keeps the I/O path exercisable.
                         std::thread::sleep(ctx.fake_latency);
+                        last_metrics = InferMetrics {
+                            verdict: "canned".into(),
+                            model: "none".into(),
+                            ..Default::default()
+                        };
                         Some((ctx.canned.clone(), postprocess::Join::Fresh))
                     }
                 };
@@ -334,6 +377,11 @@ fn run_actions(
                     hold,
                     end_cause,
                     target_at_capture: machine.target_at_capture.clone(),
+                    released_at,
+                    metrics: last_metrics.clone(),
+                    ring_overruns: last_audio_health.0,
+                    stream_errors: last_audio_health.1,
+                    device_rate: last_device_rate,
                 };
                 if ctx.jobs.try_send(job).is_ok() {
                     ring_doorbell(ctx.main_thread);
@@ -374,7 +422,7 @@ fn run_actions(
 fn transcribe_off_thread(
     p: &mut Pipeline,
     utterance_id: u64,
-) -> Option<(String, postprocess::Join)> {
+) -> (Option<(String, postprocess::Join)>, InferMetrics) {
     let utterance = std::mem::take(&mut p.utterance);
     let device_rate = p.device_rate;
     let prev_text = p.prev.as_ref().map(|(t, _)| t.clone());
@@ -386,28 +434,32 @@ fn transcribe_off_thread(
     let mut engine =
         std::mem::replace(&mut p.backend, Box::new(backend::MockBackend::default()));
 
-    type InferResult = (Box<dyn backend::TranscriptionBackend>, Option<String>);
+    type InferResult = (
+        Box<dyn backend::TranscriptionBackend>,
+        Option<String>,
+        InferMetrics,
+    );
     let (tx, rx) = crossbeam_channel::bounded::<InferResult>(1);
 
     if std::thread::Builder::new()
         .name("whisperrust-infer".into())
         .spawn(move || {
-            let text =
+            let (text, m) =
                 run_inference(&mut engine, &utterance, device_rate, prev_text, utterance_id);
-            let _ = tx.send((engine, text));
+            let _ = tx.send((engine, text, m));
         })
         .is_err()
     {
         tracing::error!(utterance_id, "could not spawn inference thread");
-        return None;
+        return (None, InferMetrics::default());
     }
 
     // Keep the audio path and the health signal alive while we wait.
-    let text = loop {
+    let (text, metrics) = loop {
         match rx.recv_timeout(Duration::from_millis(20)) {
-            Ok((b, text)) => {
+            Ok((b, text, m)) => {
                 p.backend = b;
-                break text;
+                break (text, m);
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 WORKER_HEARTBEAT.beat();
@@ -421,14 +473,18 @@ fn transcribe_off_thread(
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 tracing::error!(utterance_id, "inference thread died");
-                break None;
+                break (None, InferMetrics::default());
             }
         }
     };
 
-    let text = text?;
-    p.prev = Some((text.clone(), Instant::now()));
-    Some((text, join))
+    match text {
+        Some(t) => {
+            p.prev = Some((t.clone(), Instant::now()));
+            (Some((t, join)), metrics)
+        }
+        None => (None, metrics),
+    }
 }
 
 /// The inference body. Owns its audio, so it can run anywhere.
@@ -438,27 +494,36 @@ fn run_inference(
     device_rate: u32,
     prev_text: Option<String>,
     utterance_id: u64,
-) -> Option<String> {
+) -> (Option<String>, InferMetrics) {
+    let mut m = InferMetrics::default();
     let raw_secs = utterance.len() as f32 / device_rate as f32;
+    m.raw_audio_secs = raw_secs;
 
+    let t_resample = Instant::now();
     let pcm = match audio::finalize(utterance, device_rate) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(utterance_id, "resample failed: {e}");
-            return None;
+            m.verdict = "resample_failed".into();
+            return (None, m);
         }
     };
+    m.resample_ms = t_resample.elapsed().as_secs_f64() * 1000.0;
 
     // VAD returning None means genuinely no speech, so the model is never called - the
     // cheapest possible fix for the most common hallucination case.
+    let t_vad = Instant::now();
     let trimmed = match engine.vad_trim(&pcm) {
         Some(t) => t,
         None => {
+            m.vad_ms = t_vad.elapsed().as_secs_f64() * 1000.0;
+            m.verdict = "vad_no_speech".into();
             tracing::info!(utterance_id, raw_secs, "no speech detected; skipping inference");
             println!("  [#{utterance_id} no speech - skipped]");
-            return None;
+            return (None, m);
         }
     };
+    m.vad_ms = t_vad.elapsed().as_secs_f64() * 1000.0;
 
     let hint = backend::Hint {
         language: Some("en".into()),
@@ -466,14 +531,22 @@ fn run_inference(
         ..Default::default()
     };
 
+    let info = engine.info();
+    m.model = info.model.clone();
+    m.threads = info.threads;
+
     let transcript = match engine.transcribe(&trimmed, &hint) {
         Ok(t) => t,
         Err(e) => {
             tracing::error!(utterance_id, "inference failed: {e}");
             println!("  [#{utterance_id} inference error: {e}]");
-            return None;
+            m.verdict = "inference_error".into();
+            return (None, m);
         }
     };
+    m.trimmed_audio_secs = transcript.audio_secs;
+    m.infer_ms = transcript.inference.as_secs_f64() * 1000.0;
+    m.no_speech_prob = transcript.max_no_speech;
 
     tracing::info!(
         utterance_id,
@@ -485,11 +558,15 @@ fn run_inference(
     );
 
     match postprocess::judge(&transcript) {
-        postprocess::Verdict::Accept => Some(transcript.text),
+        postprocess::Verdict::Accept => {
+            m.verdict = "accepted".into();
+            (Some(transcript.text), m)
+        }
         postprocess::Verdict::Reject(reason) => {
+            m.verdict = reason.as_str().to_string();
             tracing::info!(utterance_id, reason = reason.as_str(), "rejected as non-speech");
             println!("  [#{utterance_id} filtered: {}]", reason.as_str());
-            None
+            (None, m)
         }
     }
 }
@@ -511,7 +588,7 @@ impl InjectGuard for MainGuard {
 }
 
 /// Take a delivery job through preflight, then act on the decision.
-fn deliver(job: DeliverJob, cb: &mut dyn ClipboardPort) {
+fn deliver(job: DeliverJob, cb: &mut dyn ClipboardPort, log: &session_log::SessionLog) {
     // ORDER MATTERS. Sanitize the raw model output first - it legitimately trims stray
     // leading/trailing whitespace - and only then apply the join separator. Doing it the
     // other way round added a space and then trimmed it back off, which glued every pair
@@ -534,14 +611,58 @@ fn deliver(job: DeliverJob, cb: &mut dyn ClipboardPort) {
         app_denied: false,
     };
 
+    // Everything below records to the session log, including refusals. A log of only
+    // successful dictations is survivorship-biased by construction: the interesting
+    // records are the ones where text did NOT reach the target.
+    let mut rec = session_log::UtteranceRecord {
+        utterance_id: job.utterance_id,
+        at: session_log::now_rfc3339(),
+        hold_ms: job.hold.as_millis() as u64,
+        end_cause: job.end_cause.as_str().to_string(),
+        device_rate: job.device_rate,
+        raw_audio_secs: job.metrics.raw_audio_secs,
+        trimmed_audio_secs: job.metrics.trimmed_audio_secs,
+        ring_overruns: job.ring_overruns,
+        stream_errors: job.stream_errors,
+        model: job.metrics.model.clone(),
+        threads: job.metrics.threads,
+        resample_ms: job.metrics.resample_ms,
+        vad_ms: job.metrics.vad_ms,
+        infer_ms: job.metrics.infer_ms,
+        no_speech_prob: job.metrics.no_speech_prob,
+        word_count: clean.split_whitespace().count(),
+        verdict: job.metrics.verdict.clone(),
+        target_exe: now.as_ref().map(|t| t.exe.clone()).unwrap_or_default(),
+        target_title: now.as_ref().map(|t| t.title.clone()).unwrap_or_default(),
+        target_password_state: now
+            .as_ref()
+            .map(|t| t.password.as_str().to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        target_elevated: now.as_ref().map(|t| t.elevated).unwrap_or(false),
+        on_battery: session_log::on_battery(),
+        release_to_delivered_ms: job.released_at.elapsed().as_secs_f64() * 1000.0,
+        text: Some(clean.clone()),
+        ..Default::default()
+    };
+
     match preflight::preflight(&req) {
         Decision::Inject(clearance) => {
+            rec.decision = "inject".into();
+            rec.inject_method = Some(format!("{:?}", clearance.method).to_lowercase());
             let guard = MainGuard;
             let outcome = inject::inject(clearance, &clean, &guard, cb);
+            rec.inject_outcome = Some(match &outcome {
+                inject::InjectOutcome::Injected { .. } => "injected".into(),
+                inject::InjectOutcome::ClipboardOnly { reason } => format!("clipboard:{reason}"),
+                inject::InjectOutcome::Aborted { reason, .. } => format!("aborted:{reason}"),
+                inject::InjectOutcome::Failed { .. } => "failed".to_string(),
+            });
             tracing::info!(utterance_id = job.utterance_id, ?outcome, "delivered");
             println!("  [#{} {:?}]", job.utterance_id, outcome);
         }
         Decision::ClipboardOnly(reason) => {
+            rec.decision = "clipboard_only".into();
+            rec.decision_reason = Some(reason.as_str().to_string());
             // The text is still useful; the user just pastes it themselves.
             match cb.set_text(&clean) {
                 Ok(()) => println!(
@@ -562,6 +683,8 @@ fn deliver(job: DeliverJob, cb: &mut dyn ClipboardPort) {
             );
         }
         Decision::Drop(reason) => {
+            rec.decision = "drop".into();
+            rec.decision_reason = Some(reason.as_str().to_string());
             // Nothing written anywhere. This is the password-field path: putting it on
             // the clipboard would only relocate the exposure.
             println!("  [#{} DROPPED - {}]", job.utterance_id, reason.user_message());
@@ -572,6 +695,8 @@ fn deliver(job: DeliverJob, cb: &mut dyn ClipboardPort) {
             );
         }
     }
+
+    log.record(rec);
 }
 
 fn run_daemon(canned: String, fake_latency: Duration, model: Option<String>, threads: i32) {
@@ -660,6 +785,21 @@ fn run_daemon(canned: String, fake_latency: Duration, model: Option<String>, thr
         .expect("spawn worker");
 
     let mut cb = clipboard::WinClipboard::new();
+
+    // Text logging is OPT-IN and off by default.
+    //
+    // Audio retention is on (PLAN 10.5) for the voice-style work, but the transcript is
+    // the more directly sensitive artifact: it is searchable, and on this machine it may
+    // contain client-confidential material. Metadata is always recorded - it is what makes
+    // the log useful for latency, WPM and failure analysis, and it carries none of the
+    // content risk.
+    let log_text = std::env::args().any(|a| a == "--log-text");
+    let session = session_log::SessionLog::open(log_text);
+    println!(
+        "session log  : {}{}",
+        session.path().display(),
+        if log_text { "   (TEXT LOGGING ENABLED)" } else { "" }
+    );
     let mut last_liveness = Instant::now();
     let mut last_health = Instant::now();
 
@@ -696,7 +836,7 @@ fn run_daemon(canned: String, fake_latency: Duration, model: Option<String>, thr
         // Drain deliveries regardless of the doorbell, so a lost message cannot strand a
         // job in the queue.
         while let Ok(job) = job_rx.try_recv() {
-            deliver(job, &mut cb);
+            deliver(job, &mut cb, &session);
         }
 
         // Watchdog A: prove the hook is still installed. Windows removes a slow hook with
@@ -738,6 +878,17 @@ fn main() {
     refuse_if_disabled();
 
     let args: Vec<String> = std::env::args().collect();
+
+    // Analytics over the session log (PLAN 7A.1).
+    if args.iter().any(|a| a == "stats" || a == "--stats") {
+        let wpm: f64 = args
+            .iter()
+            .position(|a| a == "--typing-wpm")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(65.0);
+        std::process::exit(stats::run(wpm));
+    }
 
     // Phase 2 verification: soak the audio path and print CP-2 numbers.
     if args.iter().any(|a| a == "--audio-check") {
