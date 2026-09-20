@@ -11,6 +11,8 @@
 
 use std::time::Instant;
 
+use crate::uia::{self, PasswordState};
+
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, MAX_PATH};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
@@ -41,7 +43,11 @@ pub struct TargetContext {
     /// because that is itself evidence we cannot interact with it (I-1, REDTEAM S-01).
     pub elevated: bool,
     /// Whether the focused control is a password field (I-8).
-    pub is_password: bool,
+    ///
+    /// Three-state on purpose. `Unknown` means UIA could not answer in time, which is NOT
+    /// the same as "not a password" - collapsing the two would silently reintroduce
+    /// REDTEAM B-02 on exactly the slow, busy applications most likely to time out.
+    pub password: PasswordState,
     /// When this probe was taken, for staleness comparison at inject time.
     pub probed_at: Instant,
 }
@@ -104,9 +110,20 @@ pub fn probe() -> Option<TargetContext> {
             None
         };
 
-        let is_password = focus_hwnd
+        // Cheap, in-process Win32 check first: if the classic style bit is set we are
+        // certain, and we avoid a cross-process UIA round trip entirely.
+        let win32_says_password = focus_hwnd
             .map(|h| is_password_field(HWND(h as *mut _)))
             .unwrap_or(false);
+
+        let password = if win32_says_password {
+            PasswordState::Yes
+        } else {
+            // Browser and Electron password fields are not Win32 controls and have no
+            // style bits, so the style check above cannot see them. UIA is the only
+            // general mechanism. Bounded-time; never blocks this thread for long.
+            uia::focused_is_password()
+        };
 
         Some(TargetContext {
             hwnd: hwnd.0 as isize,
@@ -114,7 +131,7 @@ pub fn probe() -> Option<TargetContext> {
             exe,
             title,
             elevated,
-            is_password,
+            password,
             probed_at: Instant::now(),
         })
     }
@@ -220,7 +237,7 @@ mod tests {
             exe: "test.exe".into(),
             title: String::new(),
             elevated: false,
-            is_password: false,
+            password: PasswordState::No,
             probed_at: Instant::now(),
         }
     }

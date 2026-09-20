@@ -34,6 +34,7 @@ mod preflight;
 mod resample;
 mod sanitize;
 mod target;
+mod uia;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -787,7 +788,7 @@ fn main() {
                 println!("hwnd       : {:#x}", c.hwnd);
                 println!("focus hwnd : {:?}", c.focus_hwnd);
                 println!("elevated   : {}", c.elevated);
-                println!("password   : {}", c.is_password);
+                println!("password   : {}", c.password.as_str());
                 println!("method     : {:?}", policy::choose_method(&c.exe, 50));
                 println!("restore ms : {}", policy::restore_delay_ms(&c.exe));
                 println!("terminal   : {}", policy::is_terminal(&c.exe));

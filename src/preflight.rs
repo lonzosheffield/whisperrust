@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::policy::{self, InjectMethod};
 use crate::target::TargetContext;
+use crate::uia::PasswordState;
 
 /// What preflight decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,8 @@ pub enum Reason {
     TargetElevated,
     /// Focused control is a masked password field (I-8).
     PasswordField,
+    /// UIA could not determine whether the target is a password field.
+    PasswordUnknown,
     /// Capture did not end with the user's own key-up (I-6).
     SynthesizedEnd,
     /// User is holding modifiers; injecting now would send Ctrl+Shift+V or similar.
@@ -76,6 +79,7 @@ impl Reason {
             Reason::ForegroundChanged => "Copied - window changed",
             Reason::TargetElevated => "Copied - target needs admin",
             Reason::PasswordField => "Discarded - password field",
+            Reason::PasswordUnknown => "Copied - could not verify field type",
             Reason::SynthesizedEnd => "Copied - capture ended unexpectedly",
             Reason::ModifiersHeld => "Copied - modifier key held",
             Reason::DaemonUnhealthy => "Copied - daemon degraded",
@@ -91,6 +95,7 @@ impl Reason {
             Reason::ForegroundChanged => "foreground_changed",
             Reason::TargetElevated => "target_elevated",
             Reason::PasswordField => "password_field",
+            Reason::PasswordUnknown => "password_unknown",
             Reason::SynthesizedEnd => "synthesized_end",
             Reason::ModifiersHeld => "modifiers_held",
             Reason::DaemonUnhealthy => "daemon_unhealthy",
@@ -161,10 +166,23 @@ pub fn preflight(req: &Request) -> Decision {
     // This is the one refusal that discards text entirely. Putting a password-field
     // transcript on the clipboard would just relocate the exposure (I-8, B-02).
     // Checked against BOTH samples: if either says password, drop.
-    let pw_then = req.target_at_capture.map(|t| t.is_password).unwrap_or(false);
-    let pw_now = req.target_now.map(|t| t.is_password).unwrap_or(false);
-    if pw_then || pw_now {
+    let pw_then = req
+        .target_at_capture
+        .map(|t| t.password)
+        .unwrap_or(PasswordState::No);
+    let pw_now = req.target_now.map(|t| t.password).unwrap_or(PasswordState::No);
+
+    // Confirmed password anywhere => drop outright.
+    if pw_then == PasswordState::Yes || pw_now == PasswordState::Yes {
         return Decision::Drop(Reason::PasswordField);
+    }
+
+    // UIA could not answer. We genuinely do not know whether this is a masked field, so
+    // typing would be a guess with a credential-shaped downside. Fall back to the
+    // clipboard (I-9, "when unsure, do not inject"): the user keeps their words and
+    // decides where they go.
+    if pw_then == PasswordState::Unknown || pw_now == PasswordState::Unknown {
+        return Decision::ClipboardOnly(Reason::PasswordUnknown);
     }
 
     // 4. I-6: a capture we ended ourselves never types.
@@ -250,7 +268,7 @@ mod tests {
             exe: exe.into(),
             title: String::new(),
             elevated: false,
-            is_password: false,
+            password: PasswordState::No,
             probed_at: Instant::now(),
         }
     }
@@ -278,7 +296,7 @@ mod tests {
     fn password_field_drops_and_does_not_reach_clipboard() {
         // B-02: relocating the exposure to the clipboard is not a fix.
         let mut t = target(1, "chrome.exe");
-        t.is_password = true;
+        t.password = PasswordState::Yes;
         assert_eq!(
             preflight(&ok_req("hunter2", &t)),
             Decision::Drop(Reason::PasswordField)
@@ -289,7 +307,7 @@ mod tests {
     fn password_field_at_capture_time_also_drops() {
         let pw = {
             let mut t = target(1, "chrome.exe");
-            t.is_password = true;
+            t.password = PasswordState::Yes;
             t
         };
         let clean = target(1, "chrome.exe");
@@ -410,11 +428,43 @@ mod tests {
     }
 
     #[test]
+    fn unknown_password_state_falls_back_rather_than_typing() {
+        // A UIA timeout must not be treated as "not a password". Browser and Electron
+        // fields are exactly where B-02 lives and exactly where UIA is slowest.
+        let mut t = target(1, "chrome.exe");
+        t.password = PasswordState::Unknown;
+        assert_eq!(
+            preflight(&ok_req("maybe a secret", &t)),
+            Decision::ClipboardOnly(Reason::PasswordUnknown)
+        );
+    }
+
+    #[test]
+    fn confirmed_password_outranks_unknown() {
+        let known = {
+            let mut t = target(1, "chrome.exe");
+            t.password = PasswordState::Yes;
+            t
+        };
+        let unknown = {
+            let mut t = target(1, "chrome.exe");
+            t.password = PasswordState::Unknown;
+            t
+        };
+        let req = Request {
+            target_at_capture: Some(&known),
+            target_now: Some(&unknown),
+            ..ok_req("secret", &unknown)
+        };
+        assert_eq!(preflight(&req), Decision::Drop(Reason::PasswordField));
+    }
+
+    #[test]
     fn password_outranks_everything_else() {
         // Ordering check: a password field with several other faults still reports
         // PasswordField, the most severe reason.
         let mut t = target(1, "chrome.exe");
-        t.is_password = true;
+        t.password = PasswordState::Yes;
         t.elevated = true;
         let req = Request {
             end_cause: EndCause::MaxDuration,
