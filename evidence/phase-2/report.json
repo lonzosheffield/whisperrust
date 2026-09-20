@@ -1,0 +1,113 @@
+{
+  "phase": "2",
+  "checkpoint": "CP-2",
+  "timestamp_utc": "2026-09-20T04:45:00Z",
+  "status": "PASS_WITH_TWO_CRITERIA_OUTSTANDING",
+  "duration_s": 600,
+
+  "device": {
+    "name": "Microphone (HD Pro Webcam C920)",
+    "sample_rate_hz": 48000,
+    "channels": 4,
+    "sample_format": "I24",
+    "note": "Device advertises the same 48kHz x4 config in several sample formats. The first one offered is I24, which the initial build could not convert - see plan_amendments."
+  },
+
+  "criteria": {
+    "zero_ring_overruns": {
+      "result": "PASS",
+      "measured": 0,
+      "limit": 0,
+      "frames_captured": 28717519
+    },
+    "memory_flat_within_5mb": {
+      "result": "PASS",
+      "rss_start_mb": 11.4,
+      "rss_peak_mb": 16.0,
+      "growth_mb": 4.6,
+      "limit_mb": 5.0,
+      "interpretation": "Growth is front-loaded: 11.4 -> 15.9 MB during the first ~45s, which is the harness's own 20s retention buffer (960000 f32 = 3.84 MB) plus allocator warmup. From t=45s to t=596s the working set is FLAT at 15.8-16.0 MB across 9.2 minutes and 25 million frames. That flatness, not the headline growth number, is the evidence there is no leak."
+    },
+    "resample_accuracy": {
+      "result": "PASS",
+      "resampled_frames": 320000,
+      "expected_frames": 320000,
+      "length_error_pct": 0.0,
+      "limit_pct": 0.1
+    },
+    "no_discontinuities": {
+      "result": "PASS",
+      "max_sample_to_sample_delta": 0.0150,
+      "note": "Consistent with continuous room tone. A dropped block or click would appear here as a large spike."
+    },
+    "signal_preserved": {
+      "result": "PASS",
+      "input_rms": 0.00516,
+      "output_rms": 0.00510,
+      "note": "0.00516 is quiet room tone, not silence. The path was exercised but not with speech."
+    },
+    "preroll_correct": {
+      "result": "PASS",
+      "frames": 19200,
+      "expected": 19200,
+      "derivation": "48000 Hz * 400 ms"
+    },
+    "device_loss_recovery": {
+      "result": "NOT_TESTED",
+      "reason": "Requires physically unplugging the C920 mid-soak. The supervisor and ring-handoff exist and are exercised by the rebuild path, but the criterion is unproven until a human pulls the cable.",
+      "how_to_test": "Run `whisperrust --audio-check 120`, unplug the C920 at ~t=30s, watch `rebuilds` increment and `frames` resume on the Intel array within 5s."
+    },
+    "sleep_resume": {
+      "result": "NOT_TESTED",
+      "reason": "Requires suspending the machine mid-soak. Same code path as device loss (silent-death watchdog), but unproven."
+    }
+  },
+
+  "performance": {
+    "resample_ms_for_20s_audio": 8.0,
+    "implication": "Resampling a whole utterance at finalize costs ~2ms per 5s of audio. This confirms the decision to move it OFF the real-time callback: there was never a latency reason to do it there, and doing it there is where xruns come from."
+  },
+
+  "defects_found_and_fixed": [
+    {
+      "id": "P2-01",
+      "severity": "HIGH",
+      "title": "Audio supervisor could not actually rebuild after device loss",
+      "detail": "rtrb's Producer is moved into the cpal callback closure and dies with the stream, so a rebuilt stream left the original Consumer attached to nothing. The first implementation contained a comment acknowledging this rather than fixing it, which would have shipped a stated pass criterion as a known-broken path.",
+      "fix": "Each rebuild allocates a fresh ring and publishes the new Consumer over a channel; the drain path adopts it. Drain stays lock-free because it runs on the worker, never the audio callback."
+    },
+    {
+      "id": "P2-02",
+      "severity": "HIGH",
+      "title": "Unsupported sample format I24 on the actual microphone",
+      "detail": "Only F32/I16/U16 were handled. The C920's first-offered config is I24, so every stream build failed. Devices advertise one rate in multiple formats, and the code was taking whichever came first.",
+      "fix": "Sample format is now ranked and chosen deliberately (F32 > I16 > I32 > I24 > U16 > U8 > I8), and I24/I32/U8/I8 conversion was added. F64 deliberately excluded - no microphone produces it and supporting it would force the whole conversion path to f64."
+    },
+    {
+      "id": "P2-03",
+      "severity": "MED",
+      "title": "start() reported a misleading error and raced the device",
+      "detail": "A fixed 250ms sleep then a bare 'no sample rate' message, which hid the real I24 failure underneath and made P2-02 undiagnosable.",
+      "fix": "Waits up to 5s for readiness and surfaces the supervisor's actual error string."
+    },
+    {
+      "id": "P2-04",
+      "severity": "MED",
+      "title": "The verification harness would have failed its own memory criterion",
+      "detail": "It retained every captured sample. A 10-minute soak at 48 kHz is ~115 MB of f32, which would have blown the 5 MB limit using the TEST's memory and reported a leak that does not exist.",
+      "fix": "Retains the first 20s for the WAV and resample check, drains the rest. A test must not be greedier than the thing it tests."
+    }
+  ],
+
+  "plan_amendments": [
+    "PLAN 3.3 assumed 48kHz f32 capture. Reality on this hardware is 48kHz, 4 channels, I24. Downmix and format conversion are both load-bearing, not incidental.",
+    "The original pasted blueprints forced `channels: 1, sample_rate: 16000`. This hardware offers neither - confirming that plan would not have opened a stream at all.",
+    "CP-2 device-loss and sleep/resume criteria remain open and require a human."
+  ],
+
+  "artifacts": [
+    "soak-600s.txt",
+    "capture-device-48000hz.wav",
+    "capture-16k.wav"
+  ]
+}

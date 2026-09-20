@@ -7,6 +7,7 @@ LOCAL-ENV.md
 # Audio retention is ON (PLAN.md 10.5). None of it belongs in a public repo.
 audio/
 transcripts/
+evidence/**/*.wav
 *.wav
 *.jsonl
 *.session.log

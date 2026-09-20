@@ -1,0 +1,211 @@
+Phase 2 audio check - 600s soak
+
+  device rate   : 48000 Hz
+  channels      : 4
+  preroll       : 19200 frames (400ms)
+
+2026-09-20T04:31:14.663153Z  INFO whisperrust::audio: capture started device="Microphone (HD Pro Webcam C920)" rate=48000 channels=4
+  t=   5s  frames=235663     overruns=0      rebuilds=0 rss=13.2MB
+  t=  10s  frames=476143     overruns=0      rebuilds=0 rss=14.1MB
+  t=  15s  frames=716143     overruns=0      rebuilds=0 rss=15.0MB
+  t=  20s  frames=956143     overruns=0      rebuilds=0 rss=15.9MB
+  t=  25s  frames=1196623    overruns=0      rebuilds=0 rss=15.9MB
+  t=  30s  frames=1437103    overruns=0      rebuilds=0 rss=15.9MB
+  t=  35s  frames=1677103    overruns=0      rebuilds=0 rss=15.9MB
+  t=  40s  frames=1918063    overruns=0      rebuilds=0 rss=15.9MB
+  t=  45s  frames=2158543    overruns=0      rebuilds=0 rss=15.9MB
+  t=  50s  frames=2399503    overruns=0      rebuilds=0 rss=15.9MB
+  t=  55s  frames=2639503    overruns=0      rebuilds=0 rss=15.9MB
+  t=  60s  frames=2879983    overruns=0      rebuilds=0 rss=15.9MB
+  t=  65s  frames=3119983    overruns=0      rebuilds=0 rss=15.9MB
+  t=  70s  frames=3360463    overruns=0      rebuilds=0 rss=15.9MB
+  t=  75s  frames=3600943    overruns=0      rebuilds=0 rss=15.9MB
+  t=  80s  frames=3840943    overruns=0      rebuilds=0 rss=15.9MB
+  t=  85s  frames=4080943    overruns=0      rebuilds=0 rss=15.9MB
+  t=  90s  frames=4320943    overruns=0      rebuilds=0 rss=15.9MB
+  t=  95s  frames=4561423    overruns=0      rebuilds=0 rss=15.9MB
+  t= 100s  frames=4801423    overruns=0      rebuilds=0 rss=15.9MB
+  t= 105s  frames=5041903    overruns=0      rebuilds=0 rss=15.9MB
+  t= 110s  frames=5281903    overruns=0      rebuilds=0 rss=15.9MB
+  t= 115s  frames=5522383    overruns=0      rebuilds=0 rss=15.9MB
+  t= 120s  frames=5762383    overruns=0      rebuilds=0 rss=15.9MB
+  t= 125s  frames=6003343    overruns=0      rebuilds=0 rss=15.9MB
+  t= 130s  frames=6243823    overruns=0      rebuilds=0 rss=15.9MB
+2026-09-20T04:33:29.743485Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:33:29.748230Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:33:29.777177Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+  t= 135s  frames=6483823    overruns=0      rebuilds=0 rss=15.8MB
+2026-09-20T04:33:29.778538Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:33:34.741355Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:33:34.742350Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:33:34.742486Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+  t= 140s  frames=6724783    overruns=0      rebuilds=0 rss=15.8MB
+  t= 145s  frames=6964783    overruns=0      rebuilds=0 rss=15.8MB
+  t= 150s  frames=7204783    overruns=0      rebuilds=0 rss=15.8MB
+  t= 155s  frames=7444783    overruns=0      rebuilds=0 rss=15.8MB
+  t= 160s  frames=7685743    overruns=0      rebuilds=0 rss=15.8MB
+  t= 165s  frames=7926223    overruns=0      rebuilds=0 rss=15.8MB
+  t= 170s  frames=8166703    overruns=0      rebuilds=0 rss=15.8MB
+  t= 175s  frames=8406703    overruns=0      rebuilds=0 rss=15.8MB
+  t= 180s  frames=8647663    overruns=0      rebuilds=0 rss=15.8MB
+  t= 185s  frames=8888143    overruns=0      rebuilds=0 rss=15.8MB
+  t= 190s  frames=9128143    overruns=0      rebuilds=0 rss=15.8MB
+  t= 195s  frames=9357583    overruns=0      rebuilds=0 rss=15.8MB
+2026-09-20T04:34:29.978572Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:29.978658Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.097064Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.098010Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.098352Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.099528Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.162097Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.163468Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.163593Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.217204Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.257125Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.258234Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.258322Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:30.262281Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:33.482496Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.720974Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.722285Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.722331Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.724946Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.809286Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.810658Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.851984Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.852026Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:34.852688Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+  t= 200s  frames=9590095    overruns=0      rebuilds=0 rss=15.8MB
+2026-09-20T04:34:35.157059Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:35.157170Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:35.158520Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:35.158564Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:39.879444Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:39.881080Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:39.881126Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:39.881848Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:34:39.943092Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+  t= 205s  frames=9824047    overruns=0      rebuilds=0 rss=15.8MB
+  t= 210s  frames=10065007   overruns=0      rebuilds=0 rss=15.8MB
+  t= 215s  frames=10305007   overruns=0      rebuilds=0 rss=15.8MB
+  t= 220s  frames=10545487   overruns=0      rebuilds=0 rss=15.8MB
+  t= 225s  frames=10785487   overruns=0      rebuilds=0 rss=15.8MB
+  t= 230s  frames=11025487   overruns=0      rebuilds=0 rss=15.8MB
+  t= 235s  frames=11265967   overruns=0      rebuilds=0 rss=15.8MB
+  t= 240s  frames=11506447   overruns=0      rebuilds=0 rss=15.8MB
+  t= 245s  frames=11747407   overruns=0      rebuilds=0 rss=15.8MB
+  t= 250s  frames=11987887   overruns=0      rebuilds=0 rss=15.8MB
+  t= 255s  frames=12228847   overruns=0      rebuilds=0 rss=15.8MB
+  t= 260s  frames=12469807   overruns=0      rebuilds=0 rss=15.8MB
+  t= 265s  frames=12709807   overruns=0      rebuilds=0 rss=15.8MB
+  t= 270s  frames=12950287   overruns=0      rebuilds=0 rss=15.8MB
+  t= 275s  frames=13190767   overruns=0      rebuilds=0 rss=15.8MB
+  t= 280s  frames=13431247   overruns=0      rebuilds=0 rss=15.8MB
+  t= 285s  frames=13671727   overruns=0      rebuilds=0 rss=15.8MB
+  t= 290s  frames=13912687   overruns=0      rebuilds=0 rss=15.8MB
+  t= 295s  frames=14153167   overruns=0      rebuilds=0 rss=15.8MB
+  t= 300s  frames=14393167   overruns=0      rebuilds=0 rss=15.9MB
+  t= 305s  frames=14633647   overruns=0      rebuilds=0 rss=15.9MB
+  t= 310s  frames=14874607   overruns=0      rebuilds=0 rss=15.9MB
+  t= 315s  frames=15115087   overruns=0      rebuilds=0 rss=15.9MB
+  t= 320s  frames=15355087   overruns=0      rebuilds=0 rss=15.9MB
+  t= 325s  frames=15595567   overruns=0      rebuilds=0 rss=15.9MB
+  t= 330s  frames=15836047   overruns=0      rebuilds=0 rss=15.9MB
+  t= 335s  frames=16077007   overruns=0      rebuilds=0 rss=15.9MB
+  t= 340s  frames=16317487   overruns=0      rebuilds=0 rss=15.9MB
+  t= 345s  frames=16557967   overruns=0      rebuilds=0 rss=15.9MB
+  t= 350s  frames=16797967   overruns=0      rebuilds=0 rss=15.9MB
+  t= 355s  frames=17038447   overruns=0      rebuilds=0 rss=15.9MB
+  t= 360s  frames=17278447   overruns=0      rebuilds=0 rss=16.0MB
+  t= 365s  frames=17518447   overruns=0      rebuilds=0 rss=16.0MB
+  t= 370s  frames=17758927   overruns=0      rebuilds=0 rss=16.0MB
+  t= 375s  frames=17999407   overruns=0      rebuilds=0 rss=16.0MB
+  t= 380s  frames=18239407   overruns=0      rebuilds=0 rss=16.0MB
+  t= 385s  frames=18480367   overruns=0      rebuilds=0 rss=16.0MB
+  t= 390s  frames=18720367   overruns=0      rebuilds=0 rss=16.0MB
+  t= 395s  frames=18960847   overruns=0      rebuilds=0 rss=16.0MB
+  t= 400s  frames=19200847   overruns=0      rebuilds=0 rss=16.0MB
+  t= 405s  frames=19441807   overruns=0      rebuilds=0 rss=16.0MB
+  t= 410s  frames=19682287   overruns=0      rebuilds=0 rss=16.0MB
+  t= 415s  frames=19922767   overruns=0      rebuilds=0 rss=16.0MB
+  t= 420s  frames=20162767   overruns=0      rebuilds=0 rss=16.0MB
+  t= 425s  frames=20403247   overruns=0      rebuilds=0 rss=16.0MB
+  t= 430s  frames=20643247   overruns=0      rebuilds=0 rss=16.0MB
+2026-09-20T04:38:29.936904Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:38:29.936958Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:38:29.937764Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:38:29.968495Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:38:29.968565Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+  t= 435s  frames=20883343   overruns=0      rebuilds=0 rss=16.0MB
+  t= 440s  frames=21123343   overruns=0      rebuilds=0 rss=16.0MB
+  t= 445s  frames=21363823   overruns=0      rebuilds=0 rss=16.0MB
+  t= 450s  frames=21603823   overruns=0      rebuilds=0 rss=16.0MB
+  t= 455s  frames=21843823   overruns=0      rebuilds=0 rss=16.0MB
+  t= 460s  frames=22084303   overruns=0      rebuilds=0 rss=16.0MB
+  t= 465s  frames=22324303   overruns=0      rebuilds=0 rss=16.0MB
+  t= 470s  frames=22565263   overruns=0      rebuilds=0 rss=16.0MB
+  t= 475s  frames=22805743   overruns=0      rebuilds=0 rss=16.0MB
+  t= 480s  frames=23045743   overruns=0      rebuilds=0 rss=16.0MB
+  t= 485s  frames=23286223   overruns=0      rebuilds=0 rss=16.0MB
+  t= 490s  frames=23526223   overruns=0      rebuilds=0 rss=16.0MB
+  t= 496s  frames=23765263   overruns=0      rebuilds=0 rss=16.0MB
+2026-09-20T04:39:30.578618Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:30.856850Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:30.857487Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:31.016367Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:31.018018Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:31.018081Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:31.050033Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:31.051113Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:31.071386Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:35.428321Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:35.550573Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+  t= 501s  frames=23985679   overruns=0      rebuilds=0 rss=16.0MB
+2026-09-20T04:39:35.734460Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:40.561627Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:40.739942Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+  t= 506s  frames=24214159   overruns=0      rebuilds=0 rss=16.0MB
+2026-09-20T04:39:40.911045Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:40.911129Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+2026-09-20T04:39:40.912216Z ERROR whisperrust::audio: audio stream error: A buffer underrun or overrun occurred.
+  t= 511s  frames=24453679   overruns=0      rebuilds=0 rss=16.0MB
+  t= 516s  frames=24694159   overruns=0      rebuilds=0 rss=16.0MB
+  t= 521s  frames=24935119   overruns=0      rebuilds=0 rss=16.0MB
+  t= 526s  frames=25176079   overruns=0      rebuilds=0 rss=16.0MB
+  t= 531s  frames=25416559   overruns=0      rebuilds=0 rss=16.0MB
+  t= 536s  frames=25657039   overruns=0      rebuilds=0 rss=16.0MB
+  t= 541s  frames=25897999   overruns=0      rebuilds=0 rss=16.0MB
+  t= 546s  frames=26138959   overruns=0      rebuilds=0 rss=16.0MB
+  t= 551s  frames=26379439   overruns=0      rebuilds=0 rss=16.0MB
+  t= 556s  frames=26620399   overruns=0      rebuilds=0 rss=16.0MB
+  t= 561s  frames=26860879   overruns=0      rebuilds=0 rss=16.0MB
+  t= 566s  frames=27100879   overruns=0      rebuilds=0 rss=16.0MB
+  t= 571s  frames=27341359   overruns=0      rebuilds=0 rss=16.0MB
+  t= 576s  frames=27581359   overruns=0      rebuilds=0 rss=16.0MB
+  t= 581s  frames=27822319   overruns=0      rebuilds=0 rss=16.0MB
+  t= 586s  frames=28062799   overruns=0      rebuilds=0 rss=16.0MB
+  t= 591s  frames=28302799   overruns=0      rebuilds=0 rss=16.0MB
+  t= 596s  frames=28542799   overruns=0      rebuilds=0 rss=16.0MB
+
+================ CP-2 RESULTS ================
+retained frames     : 960000 (first 20s)
+streamed-past frames: 27756559 (drained, not retained)
+callback frames     : 28717519
+ring overruns       : 0   (criterion: 0)
+stream rebuilds     : 0
+rss start           : 11.4 MB
+rss peak            : 16.0 MB
+rss growth          : 4.6 MB   (criterion: < 5)
+resampled frames    : 320000
+expected frames     : 320000
+length error        : 0.0000%   (criterion: < 0.1)
+resample time       : 8.0 ms for 20.0s of audio
+input rms           : 0.00516
+output rms          : 0.00510
+max discontinuity   : 0.0150
+preroll retained    : 19200 frames
+
+wrote evidence/phase-2/capture-device-48000hz.wav
+wrote evidence/phase-2/capture-16k.wav
+
+CP-2 PASS
