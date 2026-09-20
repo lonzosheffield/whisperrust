@@ -1,0 +1,40 @@
+# ---- NEVER COMMIT: environment / identity ----
+LOCAL-ENV.md
+*.local.md
+.allow-live-gui-tests
+
+# ---- NEVER COMMIT: captured audio, transcripts, telemetry ----
+# Audio retention is ON (PLAN.md 10.5). None of it belongs in a public repo.
+audio/
+transcripts/
+evidence/
+*.wav
+*.jsonl
+*.session.log
+style-profile.txt
+corrections/
+
+# ---- Models (large binaries, fetched by whisperrust-fetch) ----
+models/
+*.bin
+*.gguf
+!models/.gitkeep
+
+# ---- Rust ----
+/target/
+**/*.rs.bk
+*.pdb
+
+# ---- Signing material ----
+*.pfx
+*.p12
+*.snk
+*.key
+certs/
+
+# ---- Windows / editor noise ----
+Thumbs.db
+desktop.ini
+.vs/
+.idea/
+*.swp

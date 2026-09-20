@@ -1,0 +1,2 @@
+#!/bin/sh
+exec pwsh -NoProfile -File scripts/check-secrets.ps1
