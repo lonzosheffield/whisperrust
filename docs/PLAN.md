@@ -44,22 +44,27 @@ Two operational rules follow, and they are not optional:
 operational rules stand regardless: no AV exclusions without an explicit, recorded decision;
 any EDR detection is a hard stop that surfaces to the user rather than being worked around.
 
-### 0.2 A load-bearing design assumption is probably false
+### 0.2 RESOLVED — the PTT key is never swallowed
 
-v2's Watchdog B polls `GetAsyncKeyState(VK_RCONTROL)` to detect a stuck PTT key. But the
-hook **swallows** Right-Ctrl (returns 1) so applications never see a bare Ctrl — and a
-swallowed key never reaches the async key-state update. If that is right, `GetAsyncKeyState`
-reports UP for the entire hold, Watchdog B fires ~50 ms into every capture, and **every
-dictation is killed before it starts**.
+v2 specified a hook that *swallows* the PTT key, plus a Watchdog B that polls
+`GetAsyncKeyState` to detect a stuck key. The red team argued these are incompatible.
 
-The swallow decision and the state oracle are coupled, and v2 missed it. Three ways out,
-to be settled by an **empirical spike in Phase 0, before the state machine is written**:
+**Measured 2026-09-20: they are.** A swallowed key never reaches the key-state tables, so
+both `GetAsyncKeyState` and `GetKeyState` read UP for the entire hold. Watchdog B would
+have fired ~50 ms into every capture and killed every dictation before it started.
+Confirmed across `VK_RCONTROL`, `VK_SCROLL` and `VK_PAUSE`, two runs.
 
-| Option | Trade |
-|---|---|
-| **Don't swallow** Right-Ctrl | `GetAsyncKeyState` becomes a valid oracle. Apps see a bare Ctrl press — a no-op in nearly everything. Simplest. |
-| Swallow + **Raw Input** (`RIDEV_INPUTSINK`) as an independent oracle | Correct regardless; more code. |
-| Bind a **dead key** (F24/ScrollLock/Pause) and don't swallow | No shortcut is ever consumed; needs a remappable keyboard. |
+**Decision: Option A — do not swallow.** The hook chains via `CallNextHookEx`
+unconditionally, which restores `GetAsyncKeyState` as a valid oracle and keeps the hook
+procedure trivial — and the hook proc is the one place where being slow gets us silently
+unregistered by Windows.
+
+The cost is that applications see a bare Right-Ctrl press, which is a no-op in essentially
+every application. Phase 1a verifies that empirically across all eight target apps rather
+than assuming it.
+
+Full result and consequences: [`SPIKE-PTT-ORACLE.md`](SPIKE-PTT-ORACLE.md).
+Evidence: `evidence/phase-0/20260920T022704Z/`.
 
 ---
 
@@ -173,6 +178,7 @@ These are non-negotiable and belong in `src/policy.rs`, which is a governed file
 | I-10 | **Redacting `Debug`** on `Inject`/`Transcript`/`ClipboardSnapshot`; panic hook logs type, not payload; no full minidumps | Crash artifacts otherwise carry audio, transcripts, and the user's *previous clipboard* — which may be a password. |
 | I-11 | **Downloader split into a separate `whisperrust-fetch.exe`**; the daemon links no HTTP client and is firewall-blocked | Makes "no network" OS-enforceable rather than a promise. |
 | I-12 | **Forbidden PTT bindings**: L-Ctrl/L-Shift/L-Alt/Win/CapsLock/alphanumerics/Esc/Enter/Space/Tab | A sick app that keeps swallowing L-Ctrl kills Ctrl+C/V/Z system-wide — the machine feels bricked. |
+| I-13 | **The PTT key is never swallowed** — the hook always chains via `CallNextHookEx` | Measured: swallowing blinds both `GetAsyncKeyState` and `GetKeyState`, which breaks Watchdog B and kills every capture. See SPIKE-PTT-ORACLE.md. |
 
 **Emergency stop, six independent layers:** Esc cancels an in-flight capture · kill chord
 (PTT ×5 in 1 s, checked between 64-char inject chunks) · tray menu · `--stop` named event ·

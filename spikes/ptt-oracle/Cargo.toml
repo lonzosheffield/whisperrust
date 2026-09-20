@@ -1,0 +1,18 @@
+[package]
+name = "ptt-oracle"
+version = "0.1.0"
+edition = "2021"
+description = "Phase 0 spike: can GetAsyncKeyState serve as a stuck-key oracle when a WH_KEYBOARD_LL hook swallows the key?"
+
+[dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }
+
+[[bin]]
+name = "ptt-oracle"
+path = "src/main.rs"

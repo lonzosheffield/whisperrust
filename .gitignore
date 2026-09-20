@@ -38,3 +38,6 @@ desktop.ini
 .vs/
 .idea/
 *.swp
+
+# Spike build artifacts
+spikes/*/target/
