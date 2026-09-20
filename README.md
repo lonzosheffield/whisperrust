@@ -5,8 +5,8 @@ A local, offline, push-to-talk voice dictation daemon for Windows 11, written in
 Hold a key, speak, release — the transcribed text lands in whatever application has focus.
 Everything runs on the machine. No cloud, no account, no network after the model download.
 
-> **Status: planning complete, implementation not started.**
-> The design has been through three review passes. See [`docs/PLAN.md`](docs/PLAN.md).
+> **Status: working end to end; not yet validated in real use.**
+> Start with **[STATUS.md](STATUS.md)** — it says what works, what does not, and what to do next.
 
 ## Design
 
@@ -27,6 +27,7 @@ quantized AVX2/VNNI kernels is a research project with no user-visible payoff.
 
 | Document | What it covers |
 |---|---|
+| [`STATUS.md`](STATUS.md) | **Start here.** Current state, what is blocked, exact commands to resume |
 | [`docs/PLAN.md`](docs/PLAN.md) | The plan: architecture, security invariants, latency budget, phases, checkpoints, governance |
 | [`docs/REDTEAM.md`](docs/REDTEAM.md) | Adversarial review — ~30 findings across security, catastrophic-UX, and process governance |
 | [`docs/RECON.md`](docs/RECON.md) | Verified build facts: toolchain versions, model URLs, known landmines |
