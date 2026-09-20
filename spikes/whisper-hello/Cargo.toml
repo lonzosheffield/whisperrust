@@ -1,0 +1,12 @@
+[package]
+name = "whisper-hello"
+version = "0.1.0"
+edition = "2021"
+description = "Phase 0 smoke test: does whisper-rs build and transcribe a known WAV on this machine?"
+
+[dependencies]
+whisper-rs = "0.16"
+hound = "3.5"
+
+[profile.release]
+opt-level = 3

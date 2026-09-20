@@ -1,0 +1,108 @@
+{
+  "phase": "0",
+  "checkpoint": "CP-0",
+  "timestamp_utc": "2026-09-20T02:27:04Z",
+  "git_sha": "af782e9",
+  "status": "PASS_WITH_PLAN_AMENDMENTS",
+
+  "criteria": {
+    "a_whisper_rs_transcribes_known_wav": {
+      "result": "PASS",
+      "model": "ggml-tiny.en.bin",
+      "model_sha256": "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+      "wav": "samples/jfk.wav",
+      "wav_sha256": "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e",
+      "transcript": "And so my fellow Americans ask not what your country can do for you ask what you can do for your country.",
+      "transcript_correct": true,
+      "segments": 2,
+      "no_speech_prob_max": 0.0290,
+      "model_load_ms": 194.9
+    },
+    "b_vulkan_build_links": {
+      "result": "NOT_ATTEMPTED",
+      "note": "Deferred within the 2h time-box; CPU path took priority after the /O2 discovery. Carry into Phase 1b as a benchmark column."
+    },
+    "c_ptt_oracle_spike": {
+      "result": "PASS",
+      "finding": "CONFIRMED - swallowing the PTT key blinds both GetAsyncKeyState and GetKeyState",
+      "keys_tested": ["VK_RCONTROL", "VK_SCROLL", "VK_PAUSE"],
+      "runs": 2,
+      "swallow_async_down_observed": false,
+      "passthrough_async_down_observed": true,
+      "decision": "Option A - never swallow the PTT key; hook always chains via CallNextHookEx",
+      "new_invariant": "I-13",
+      "artifact": "ptt-oracle-synthetic.txt",
+      "caveat": "Synthetic (SendInput) input. A --manual physical-key run is still owed before Phase 1a closes."
+    },
+    "d_self_signed_cert": {
+      "result": "NOT_DONE",
+      "note": "Deferred - no binary to sign until Phase 1a."
+    }
+  },
+
+  "toolchain_actual": {
+    "cmake": {
+      "version": "3.31.8",
+      "source": "portable zip to .tools/",
+      "note": "Pinned <4.x, which avoids the CMake 4 policy boundary entirely. winget install was abandoned after a UAC prompt stalled ~18 min with no progress."
+    },
+    "ninja": { "version": "1.13.2", "source": "portable zip to .tools/" },
+    "msvc": {
+      "version": "14.29.30133 (VS2019 BuildTools, v142)",
+      "note": "PLAN ASSUMPTION REFUTED - VS2022 was NOT required. whisper.cpp and ggml compiled cleanly with v142. Risk R2 retired."
+    },
+    "llvm_libclang": {
+      "installed": false,
+      "note": "PLAN ASSUMPTION REFUTED - bindgen did not require a separate libclang install. The 859 MB LLVM download is unnecessary. Risk R13 downgraded."
+    }
+  },
+
+  "critical_finding": {
+    "id": "P0-PERF-01",
+    "severity": "CRITICAL",
+    "title": "whisper.cpp was compiling unoptimized (no /O2) despite CMAKE_BUILD_TYPE=Release",
+    "cause": "The cmake crate overwrites CMAKE_CXX_FLAGS_RELEASE with cc-derived flags that contain no optimization switch, so MSVC falls back to /Od.",
+    "cmake_default_release_flags": "/MD /O2 /Ob2 /DNDEBUG",
+    "flags_actually_used_before_fix": "/utf-8 -nologo -MD -Brepro -W0",
+    "fix": "Set CMAKE_C_FLAGS_RELEASE and CMAKE_CXX_FLAGS_RELEASE as env vars; whisper-rs-sys/build.rs forwards any CMAKE_* env var into the cmake config. Pinned in .cargo/config.toml.",
+    "rejected_fix": "CFLAGS/CXXFLAGS env vars - the cmake crate overrides them, and the attempt fails silently.",
+    "impact": "Would have corrupted every Phase 1b number and driven model selection toward a far weaker model than this hardware can run.",
+    "speedup_measured": "6.3x to 8.6x depending on thread count"
+  },
+
+  "measurements": {
+    "conditions": "jfk.wav 11.0 s, AC power, warm pass (pass 1 of 2), Balanced power plan",
+    "o2_before_after_tiny_en_ms": {
+      "2": { "before": 9529, "after": 1104 },
+      "4": { "before": 6985, "after": 874 },
+      "6": { "before": 5670, "after": 709 },
+      "8": { "before": 4715, "after": 634 },
+      "10": { "before": 4305, "after": 620 },
+      "12": { "before": 4694, "after": 745 }
+    },
+    "thread_cliff_unoptimized_ms": {
+      "1": 17940, "2": 9529, "4": 6985, "6": 5670,
+      "8": 4715, "10": 4305, "12": 4694, "14": 100999
+    },
+    "thread_cliff_note": "14 threads measured 23x slower than 10. Never default to all logical processors.",
+    "optimized_model_comparison_ms": {
+      "tiny.en@8": 609,
+      "tiny.en@10": 1255,
+      "base.en@8": 1357,
+      "base.en@10": 1340,
+      "small.en-q5_1@8": 4729,
+      "small.en-q5_1@10": 4343
+    },
+    "variance_warning": "tiny.en@10 measured 620 ms and 1255 ms across separate runs. Single samples are meaningless; Phase 1b must record p50/p95 over repeated runs."
+  },
+
+  "plan_amendments_required": [
+    "R2 (VS2019 too old) - RETIRE, refuted by measurement",
+    "R13 (bindgen/libclang breakage) - DOWNGRADE, libclang not needed",
+    "R1 (CMake 4.x) - RETIRE, avoided by pinning 3.31.8",
+    "NEW R14 - native build silently unoptimized; Phase 1b must assert /O2 before recording",
+    "I-13 added - the PTT key is never swallowed",
+    "Phase 1b thread sweep must include values above the expected optimum to catch the oversubscription cliff",
+    "base.en is the leading model candidate; small.en-q5_1 at ~4.3 s is far outside the p95<=1500 ms target on CPU"
+  ]
+}

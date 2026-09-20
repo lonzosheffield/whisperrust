@@ -1,0 +1,36 @@
+# Build configuration for WhisperRust
+#
+# CRITICAL — DO NOT REMOVE THE [env] BLOCK BELOW.
+#
+# `whisper-rs-sys` builds whisper.cpp through the `cmake` crate, which overwrites CMake's
+# own Release flags with flags derived from the `cc` crate. Those flags contain NO
+# optimization switch, so MSVC falls back to /Od and whisper.cpp is compiled UNOPTIMIZED
+# even though CMAKE_BUILD_TYPE=Release.
+#
+# Measured on this machine (tiny.en, 11 s clip, 10 threads):
+#
+#     without /O2 ....... 4305 ms   (RTF 0.391)
+#     with    /O2 .......  620 ms   (RTF 0.056)
+#
+# A 7x difference. Left unfixed it silently corrupts every benchmark and would push the
+# model choice toward a much weaker model than this hardware can actually run.
+#
+# `whisper-rs-sys/build.rs` forwards any environment variable beginning with `CMAKE_`
+# into the cmake configuration, which is the supported lever for this. `CFLAGS`/`CXXFLAGS`
+# do NOT work — the cmake crate overrides them.
+#
+# Verify after any dependency bump:
+#   grep CMAKE_CXX_FLAGS_RELEASE target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt
+# It must contain /O2. See docs/TOOLING.md trap #5.
+
+[env]
+CMAKE_C_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
+
+[build]
+# Meteor Lake: 2 P-cores + 10 E-cores. ggml waits on its slowest worker, so
+# oversubscription is catastrophic (14 threads measured 23x slower than 10).
+# Runtime thread count is chosen in config, not here; this only affects cargo itself.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=native"]

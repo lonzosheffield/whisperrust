@@ -7,12 +7,13 @@ LOCAL-ENV.md
 # Audio retention is ON (PLAN.md 10.5). None of it belongs in a public repo.
 audio/
 transcripts/
-evidence/
 *.wav
 *.jsonl
 *.session.log
 style-profile.txt
 corrections/
+
+.tools/
 
 # ---- Models (large binaries, fetched by whisperrust-fetch) ----
 models/

@@ -80,6 +80,101 @@ grep -nE '^#{1,3} ' docs/PLAN.md    # headings still sane, numbering intact?
 
 ---
 
+## Trap #5 — whisper.cpp silently builds UNOPTIMIZED (7x slowdown)
+
+**The single most valuable finding of Phase 0. Check this first whenever performance looks wrong.**
+
+### Symptom
+
+Inference is 3–7x slower than the hardware should manage, with no error, no warning, and
+`CMAKE_BUILD_TYPE=Release` reported correctly everywhere you look.
+
+### Cause
+
+`whisper-rs-sys` builds whisper.cpp via the `cmake` crate. That crate derives compiler
+flags from the `cc` crate and writes them into `CMAKE_CXX_FLAGS_RELEASE`, **overwriting
+CMake's own Release defaults**. The cc-derived flags contain no optimization switch, so
+MSVC falls back to `/Od`.
+
+Compare what CMake chooses by itself against what actually gets used:
+
+```
+CMake default Release ..... /MD /O2 /Ob2 /DNDEBUG
+whisper-rs-sys actual ..... /utf-8 -nologo -MD -Brepro -W0      <-- no /O2
+```
+
+### Measured cost
+
+tiny.en, 11 s clip, 10 threads, AC power, this machine:
+
+| Build | warm time | RTF |
+|---|---|---|
+| Unoptimized (default) | 4305 ms | 0.391 |
+| `/O2` forced | **620 ms** | **0.056** |
+
+**7x.** Undetected, this corrupts every benchmark number and drives the model choice toward
+a far weaker model than the hardware can actually run.
+
+### Fix
+
+`whisper-rs-sys/build.rs` forwards any environment variable starting with `CMAKE_` into the
+cmake configuration. That is the supported lever, and it is already applied in
+`.cargo/config.toml`:
+
+```toml
+[env]
+CMAKE_C_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
+```
+
+**`CFLAGS` / `CXXFLAGS` do NOT work.** The cmake crate overrides them. This was tried first
+and failed silently, which is how the problem survives casual investigation.
+
+### Verify after any dependency bump
+
+```bash
+grep CMAKE_CXX_FLAGS_RELEASE target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt
+```
+
+It must contain `/O2`. Phase 1b's benchmark harness asserts this before recording any
+number, and refuses to run otherwise.
+
+### Related trap: `cargo clean -p` does not rebuild C dependencies
+
+`cargo clean -p whisper-rs-sys` appeared to succeed but left the CMake build tree intact, so
+two rounds of "fixes" changed nothing and looked like the flags were being ignored. The
+tell is a `CMakeCache.txt` whose mtime never changes.
+
+To genuinely force a native rebuild, delete the directory:
+
+```powershell
+Get-ChildItem "target\release\build" -Directory -Filter "whisper-rs-sys-*" | Remove-Item -Recurse -Force
+```
+
+---
+
+## Trap #6 — Thread count on hybrid P/E-core CPUs
+
+ggml splits work evenly and waits on its slowest worker, so an E-core straggler sets the
+pace and oversubscription is catastrophic. Measured (tiny.en, 11 s, unoptimized build):
+
+| Threads | Time | Note |
+|---|---|---|
+| 1 | 17940 ms | |
+| 6 | 5670 ms | |
+| 10 | **4305 ms** | best |
+| 12 | 4694 ms | past the peak |
+| 14 | **100999 ms** | **23x worse than 10** |
+
+Never default to "all logical processors". Thread count is a measured setting, swept per
+model in Phase 1b, and the sweep must include values *above* the expected optimum to catch
+this cliff.
+
+Run-to-run variance is also high (tiny.en at 10 threads measured both 620 ms and 1255 ms),
+so single samples are meaningless — Phase 1b records p50/p95 over repeated runs.
+
+---
+
 ## Trap #2 — CMake 4.x versus whisper.cpp
 
 whisper.cpp's `CMakeLists.txt` opens with `cmake_minimum_required(VERSION 3.5)`, which sits

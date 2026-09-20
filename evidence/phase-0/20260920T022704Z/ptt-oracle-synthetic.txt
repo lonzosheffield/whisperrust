@@ -1,0 +1,39 @@
+PTT oracle spike - PLAN.md 0.2
+Installing WH_KEYBOARD_LL hook...
+Hook installed.
+
+Synthetic mode (SendInput). Use --manual for a physical-key run.
+
+  trial: VK_RCONTROL swallow=false
+  trial: VK_RCONTROL swallow=true
+  trial: VK_SCROLL swallow=false
+  trial: VK_SCROLL swallow=true
+  trial: VK_PAUSE swallow=false
+  trial: VK_PAUSE swallow=true
+
+================ RESULTS ================
+
+KEY            MODE          DOWN    UP  INJ  ASYNC_DOWN?  SYNC_DOWN?
+------------------------------------------------------------------------
+VK_RCONTROL    PASSTHROUGH      1     1    2          YES         YES
+VK_RCONTROL    SWALLOW          1     1    2           NO          NO
+VK_SCROLL      PASSTHROUGH      1     1    2          YES         YES
+VK_SCROLL      SWALLOW          1     1    2           NO          NO
+VK_PAUSE       PASSTHROUGH      1     1    2          YES         YES
+VK_PAUSE       SWALLOW          1     1    2           NO          NO
+
+---------------- VERDICT ----------------
+
+  CONFIRMED: swallowing the key BLINDS GetAsyncKeyState.
+  The hook observed key-down, but GetAsyncKeyState never reported it down.
+  => PLAN.md 0.2 is correct. Watchdog B as specified would kill every capture.
+  => Choose option A (do not swallow) or B (Raw Input oracle).
+
+  Sample timelines (first 6 per trial):
+    VK_RCONTROL    PASSTHROUGH  21ms:AS 42ms:AS 63ms:AS 85ms:AS 107ms:AS 128ms:AS
+    VK_RCONTROL    SWALLOW      20ms:-- 41ms:-- 62ms:-- 84ms:-- 105ms:-- 127ms:--
+    VK_SCROLL      PASSTHROUGH  22ms:AS 43ms:AS 65ms:AS 88ms:AS 110ms:AS 132ms:AS
+    VK_SCROLL      SWALLOW      21ms:-- 42ms:-- 63ms:-- 84ms:-- 104ms:-- 125ms:--
+    VK_PAUSE       PASSTHROUGH  21ms:AS 43ms:AS 63ms:AS 84ms:AS 105ms:AS 127ms:AS
+    VK_PAUSE       SWALLOW      21ms:-- 42ms:-- 64ms:-- 85ms:-- 107ms:-- 128ms:--
+
