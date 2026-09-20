@@ -3,6 +3,9 @@
 //! Phase 1a scope: the I/O spine only. Hook, target probe, preflight, sanitize.
 //! No audio, no model, no injection yet - `inject.rs` lands next.
 
+mod fsm;
+mod hook;
+mod inject;
 mod policy;
 mod preflight;
 mod sanitize;

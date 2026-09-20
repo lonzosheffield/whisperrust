@@ -228,6 +228,17 @@ pub fn preflight(req: &Request) -> Decision {
     })
 }
 
+/// Test-only constructor for [`Clearance`].
+///
+/// I-3 keeps `Clearance`'s field private so production code cannot mint one outside
+/// `preflight()`. Tests in sibling modules still need to exercise `inject()`, so this
+/// is the single, clearly-marked exception - and it is `cfg(test)`, so it does not exist
+/// in a shipped binary.
+#[cfg(test)]
+pub fn test_clearance(method: InjectMethod, exe: &str, char_len: usize) -> Clearance {
+    Clearance { method, target_hwnd: 1, exe: exe.to_string(), char_len, _private: () }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
