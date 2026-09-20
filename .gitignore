@@ -33,6 +33,7 @@ models/
 *.snk
 *.key
 certs/
+.tools/signing/
 
 # ---- Windows / editor noise ----
 Thumbs.db

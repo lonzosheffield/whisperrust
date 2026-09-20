@@ -44,7 +44,7 @@ pub struct Hint {
     pub audio_ctx: Option<u32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Segment {
     pub text: String,
     pub no_speech_prob: f32,
@@ -52,7 +52,7 @@ pub struct Segment {
     pub end_cs: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Transcript {
     pub text: String,
     pub segments: Vec<Segment>,
@@ -62,6 +62,37 @@ pub struct Transcript {
     pub inference: Duration,
     /// Audio actually fed to the model, after VAD trimming.
     pub audio_secs: f32,
+}
+
+
+// I-10: these two carry the user's actual words, so their Debug output is REDACTED.
+//
+// `tracing` and `println!` reach for Debug readily, and the default derive would put a
+// transcript into any log line that mentions the struct. Today output is console-only;
+// from Phase 4 it becomes a file. Making the redaction structural means a future log
+// statement cannot leak content by accident.
+impl std::fmt::Debug for Segment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Segment")
+            .field("chars", &self.text.chars().count())
+            .field("no_speech_prob", &self.no_speech_prob)
+            .field("start_cs", &self.start_cs)
+            .field("end_cs", &self.end_cs)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Transcript {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Transcript")
+            .field("chars", &self.text.chars().count())
+            .field("words", &self.text.split_whitespace().count())
+            .field("segments", &self.segments.len())
+            .field("max_no_speech", &self.max_no_speech)
+            .field("inference", &self.inference)
+            .field("audio_secs", &self.audio_secs)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -407,6 +438,31 @@ impl TranscriptionBackend for MockBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_output_never_contains_the_transcript() {
+        // I-10. tracing and println! reach for Debug readily; a derived impl would put
+        // the user's words into any log line mentioning the struct.
+        let t = Transcript {
+            text: "my bank password is hunter2".into(),
+            segments: vec![Segment {
+                text: "my bank password is hunter2".into(),
+                no_speech_prob: 0.01,
+                start_cs: 0,
+                end_cs: 100,
+            }],
+            max_no_speech: 0.01,
+            inference: Duration::from_millis(1),
+            audio_secs: 1.0,
+        };
+        let dbg = format!("{t:?}");
+        assert!(!dbg.contains("hunter2"), "transcript leaked via Debug: {dbg}");
+        assert!(!dbg.contains("bank"), "transcript leaked via Debug: {dbg}");
+        assert!(dbg.contains("words"), "metadata should still be useful: {dbg}");
+
+        let seg_dbg = format!("{:?}", t.segments[0]);
+        assert!(!seg_dbg.contains("hunter2"), "segment leaked via Debug: {seg_dbg}");
+    }
 
     #[test]
     fn nan_never_reaches_the_ffi_boundary() {

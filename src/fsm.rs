@@ -229,6 +229,24 @@ impl Fsm {
             (State::Idle, Event::PttUp { .. }) | (State::Finalizing, Event::PttUp { .. }) => vec![],
 
             (_, Event::ForcedEnd { .. }) => vec![],
+
+            // D-14: a transcript arriving while a NEW capture is already running must
+            // still be delivered. The previous behaviour dropped it on the floor: pressing
+            // PTT again during inference transitioned to Capturing, and the older
+            // utterance's TranscriptReady then fell through to a no-op arm and vanished
+            // silently. The user had spoken; the words simply never appeared.
+            (State::Capturing, Event::TranscriptReady { text }) => {
+                if text.trim().is_empty() {
+                    return vec![];
+                }
+                vec![Action::Deliver {
+                    utterance_id: self.current_id.saturating_sub(1),
+                    text,
+                    hold: self.hold,
+                    end_cause: self.end_cause,
+                }]
+            }
+
             (_, Event::TranscriptReady { .. }) => vec![],
             (_, Event::ReEnable) => vec![],
         }
@@ -330,6 +348,25 @@ mod tests {
         assert!(a.contains(&Action::DiscardCapture { utterance_id: 1, why: "kill_chord" }));
         assert!(a.contains(&Action::Disable));
         assert_eq!(f.state(), State::Disabled);
+    }
+
+    #[test]
+    fn transcript_arriving_during_a_new_capture_is_still_delivered() {
+        // Regression (D-14): pressing PTT again while the previous utterance was still
+        // being transcribed silently discarded that utterance.
+        let mut f = Fsm::new();
+        let s = Instant::now();
+        f.handle(Event::PttDown { at: s });
+        f.handle(Event::PttUp { at: s + Duration::from_millis(900) });
+        // User starts a second dictation before the first transcript lands.
+        f.handle(Event::PttDown { at: s + Duration::from_millis(1000) });
+        assert_eq!(f.state(), State::Capturing);
+
+        let a = f.handle(Event::TranscriptReady { text: "first utterance".into() });
+        assert!(
+            matches!(a.first(), Some(Action::Deliver { .. })),
+            "the earlier transcript must still be delivered, got {a:?}"
+        );
     }
 
     #[test]

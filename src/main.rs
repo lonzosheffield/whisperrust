@@ -106,6 +106,43 @@ struct DeliverJob {
 // Startup refusals
 // ---------------------------------------------------------------------------------------
 
+
+/// Make a panic loud and safe instead of silent.
+///
+/// D-15: the worker thread uses `println!`, which panics if stdout is closed - a launcher
+/// with a closed pipe, a `| head`, a future tray build with no console. The thread would
+/// die, the heartbeat would go stale, the hook would correctly go transparent, and the
+/// daemon would sit there alive and completely deaf with no error and no exit.
+///
+/// Two things matter here:
+/// * the hook is disarmed immediately, so a half-dead daemon cannot hold the keyboard;
+/// * the payload is NOT logged. A panic message can contain a transcript, and I-10 says
+///   the user's words do not go into logs. The location and thread name are enough to
+///   debug with.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>");
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "<unknown>".into());
+
+        // Never print the payload: it may carry the user's words.
+        eprintln!("PANIC in thread '{name}' at {loc} (payload suppressed per I-10)");
+
+        // A daemon that has lost a thread must not keep a global keyboard hook armed.
+        hook::HEALTHY.store(false, Ordering::Relaxed);
+
+        if name == "whisperrust-worker" {
+            eprintln!("worker thread died; shutting down rather than running deaf");
+            SHUTDOWN.store(true, Ordering::Relaxed);
+        }
+        let _ = &default;
+    }));
+}
+
 /// I-1: the daemon refuses to run elevated.
 ///
 /// An elevated daemon reading a user-writable model path through ggml's hand-written
@@ -212,6 +249,28 @@ fn worker_main(ctx: WorkerCtx, mut pipe: Option<Pipeline>) {
         // that preceded it. Stopping the drain while idle would let the ring overflow and
         // would make the preroll stale - which is the whole feature.
         if let Some(p) = pipe.as_mut() {
+            // D-3: the device can change underneath us. The supervisor rebuilds onto a
+            // fallback microphone after a disconnect, and that device may run at a
+            // different rate. device_rate and the preroll ring were captured once at
+            // startup and never re-read, so a 16 kHz fallback would have been resampled as
+            // if it were 48 kHz - 3x too fast, unintelligible - and the preroll would have
+            // held 1.2 s instead of 400 ms, violating the privacy limit in policy::PREROLL.
+            let live_rate = p.capture.device_rate();
+            if live_rate != 0 && live_rate != p.device_rate {
+                tracing::warn!(
+                    old_rate = p.device_rate,
+                    new_rate = live_rate,
+                    "capture device rate changed; resizing preroll and discarding stale audio"
+                );
+                p.device_rate = live_rate;
+                p.preroll = audio::PrerollRing::new(audio::preroll_frames(live_rate));
+                // Any in-flight utterance is a mix of two sample rates and cannot be
+                // resampled correctly. Losing it is honest; splicing it is not.
+                if p.capturing {
+                    p.utterance.clear();
+                }
+            }
+
             p.scratch.clear();
             p.capture.drain_into(&mut p.scratch);
             if !p.scratch.is_empty() {
@@ -232,6 +291,26 @@ fn worker_main(ctx: WorkerCtx, mut pipe: Option<Pipeline>) {
 
         // Watchdog B: a capture whose key-up we never saw - for example because the key
         // was released while an elevated window had focus - must not hang here forever.
+        // D-13: drain the event channel BEFORE consulting the watchdog. The hook runs
+        // ahead of the async key-state update, so a genuine key-up can already be sitting
+        // in the channel while GetAsyncKeyState still reports the key down - or vice
+        // versa. Polling first meant a perfectly normal release occasionally lost the race
+        // and was recorded as StuckKeyWatchdog, which then forced clipboard-only via I-6
+        // and produced an inexplicable "capture ended unexpectedly".
+        if let Ok(ev) = ctx.rx.try_recv() {
+            let a = match ev {
+                PttEvent::Down => machine.handle(Event::PttDown { at: Instant::now() }),
+                PttEvent::Up => machine.handle(Event::PttUp { at: Instant::now() }),
+                PttEvent::KillChord => machine.handle(Event::KillChord),
+                PttEvent::LivenessPong => {
+                    tracing::trace!("hook liveness confirmed");
+                    vec![]
+                }
+            };
+            run_actions(&mut machine, a, &ctx, &mut pipe, &mut watchdog);
+            continue;
+        }
+
         if let Some(reason) = watchdog.poll() {
             watchdog.on_capture_end();
             // D-5: this capture is ending WITHOUT a key-up having been observed, so the
@@ -874,6 +953,7 @@ fn main() {
         )
         .init();
 
+    install_panic_hook();
     refuse_if_elevated();
     refuse_if_disabled();
 

@@ -1,0 +1,30 @@
+Phase 0 criterion (d) - self-signed code signing certificate
+============================================================
+Date: 2026-09-20
+
+Created:
+  subject    : CN=WhisperRust Development
+  thumbprint : 92E19BD2263D87807493660ADA26F2A21E9E6757
+  algorithm  : RSA 3072, SHA256
+  expires    : 2029-09-20
+  store      : Cert:\CurrentUser\My  (user scope, no elevation required)
+
+Binary signed with signtool from the Windows 10 SDK:
+  Successfully signed: .\target\release\whisperrust.exe
+
+Verification reports Status=UnknownError, Signer=CN=WhisperRust Development.
+This is EXPECTED and not a failure. The signature is present and well formed;
+it does not chain to a trusted root because the certificate has not been
+imported into Cert:\LocalMachine\Root. That import requires elevation, which
+is a MUST-STOP action under governance rule G-3, so scripts/sign.ps1 prints
+the command for the user to run rather than running it.
+
+Reminder of what this does and does not buy (PLAN.md 10.2):
+  DOES  - SmartScreen "unknown publisher" suppression once trusted
+        - tamper evidence: the binary cannot be modified without breaking it
+        - attribution
+  DOES NOT - stop antivirus flagging a global keyboard hook. Behavioural
+             detection is indifferent to who signed the binary. This is why a
+             commercial certificate was not purchased.
+
+Repeatable via: pwsh -File scripts/sign.ps1

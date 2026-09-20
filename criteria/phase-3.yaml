@@ -1,0 +1,52 @@
+# CP-3 pass criteria - machine-readable (governance G-1/G-2).
+#
+# TRUST BOUNDARY file. Weakening a threshold requires an AMEND-nnn.md approved in writing.
+
+phase: "3"
+checkpoint: CP-3
+title: MVP integration
+
+criteria:
+  - id: fifty_dictations
+    kind: manual
+    how: "50 consecutive real dictations spread across the eight target apps"
+    require: "zero wrong-window pastes, zero clipboard losses"
+    status: NOT_TESTED
+    blocked_on: user
+    evidence: "session log; count records where decision=inject and target differs from intent"
+
+  - id: silent_holds_produce_nothing
+    kind: manual
+    how: "10 deliberate holds with no speech"
+    require: "zero injected text; every record shows vad_no_speech or a filter verdict"
+    status: NOT_TESTED
+    blocked_on: user
+
+  - id: p95_latency
+    kind: auto
+    how: "whisperrust stats; read p95 release-to-delivered"
+    require: "<= phase-1b chosen-model figure + 300ms"
+    note: >
+      Read from the session log, NOT judged by feel. This is why seam S-1 had to exist
+      before the 50 dictations are performed - otherwise the effort produces anecdotes.
+    blocked_on: "phase-1b model selection"
+
+  - id: no_control_chars_injected
+    kind: auto
+    how: "cargo test sanitize::"
+    require: "all pass"
+
+  - id: password_fields_never_typed
+    kind: auto
+    how: "cargo test preflight::; plus evidence/phase-1a/uia-password-detection.txt"
+    require: "Win32 AND browser/Electron password fields both detected"
+
+  - id: injector_key_allowlist
+    kind: auto
+    how: "cargo test inject::"
+    require: "only VK_CONTROL, V, VK_PACKET emittable"
+
+  - id: no_text_in_debug_output
+    kind: auto
+    how: "cargo test backend::debug_output_never_contains_the_transcript"
+    require: "pass"

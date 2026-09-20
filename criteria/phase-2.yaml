@@ -1,0 +1,69 @@
+# CP-2 pass criteria — machine-readable (governance G-1/G-2).
+#
+# The point of this file is that a checkpoint cannot be declared passed by narrative.
+# Each criterion names how it is checked and what value is required, so evidence can be
+# diffed against it rather than summarized into it.
+#
+# This file is part of the TRUST BOUNDARY (G-2). Changing a threshold here requires an
+# AMEND-nnn.md approved by the owner in writing. An agent may not weaken a value to make a
+# run pass — that is an explicit hard-stop condition.
+
+phase: "2"
+checkpoint: CP-2
+title: Audio spine
+
+criteria:
+  - id: zero_ring_overruns
+    kind: auto
+    how: "whisperrust --audio-check N; read `ring overruns`"
+    require: "== 0"
+    note: >
+      Measures OUR ring only. It is structurally blind to audio the OS drops beneath us,
+      which is why os_stream_errors exists. Do not cite this alone as evidence of
+      "no dropped audio" — that mistake was made once already.
+
+  - id: os_stream_errors
+    kind: auto
+    how: "whisperrust --audio-check N; read `OS stream errors`"
+    require: "== 0"
+    note: >
+      cpal error-callback events, overwhelmingly WASAPI DATA_DISCONTINUITY. This is the
+      check that actually enforces the criterion's intent. The 600s soak of 2026-09-20
+      recorded 62 of these and lost ~1.4s of audio while the summary said PASS.
+
+  - id: frame_deficit
+    kind: auto
+    how: "compare `callback frames` against seconds * device_rate"
+    require: "< 0.5% of expected"
+
+  - id: resample_length_error
+    kind: auto
+    how: "whisperrust --audio-check N; read `length error`"
+    require: "< 0.1%"
+
+  - id: memory_flat
+    kind: semi
+    how: "per-5s rss samples in the soak log"
+    require: "flat after the harness retention window; daemon growth < 1 MB over 10 min"
+    note: >
+      Do NOT use (peak - start): that includes the harness's own 20s retention buffer
+      (~3.84 MB) and would false-fail at RETAIN_SECS=27. The shape is the evidence.
+
+  - id: preroll_size
+    kind: auto
+    how: "whisperrust --audio-check N; read `preroll retained`"
+    require: "== device_rate * 0.4"
+
+  - id: device_loss_recovery
+    kind: manual
+    how: "run --audio-check 120, unplug the C920 at ~t=30s"
+    require: "`rebuilds` increments and `frames` resumes within 5s"
+    status: NOT_TESTED
+    blocked_on: user
+
+  - id: sleep_resume
+    kind: manual
+    how: "run --audio-check 300, suspend and resume the machine"
+    require: "capture resumes within 5s of resume"
+    status: NOT_TESTED
+    blocked_on: user
